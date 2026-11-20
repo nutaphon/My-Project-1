@@ -56,6 +56,9 @@ class LocalStore {
   }
   async clear() { localStorage.removeItem(LS_KEY); this.data = { expenses: [], settlements: [], settings: { name_a: '', name_b: '' } }; }
   subscribe() {}
+  // incoming-transfer alerts need the online database
+  async listIncoming() { return []; }
+  async getWebhook() { return null; }
 }
 
 const EXP_COLS = ['date', 'title', 'category', 'payer', 'split', 'total', 'items', 'slip_path', 'note'];
@@ -130,7 +133,40 @@ class SupabaseStore {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'expenses' }, onChange)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'settlements' }, onChange)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'settings' }, onChange)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'incoming_payments' }, (ev) => this.onIncoming?.(ev.new))
       .subscribe();
+  }
+
+  // ----- incoming-transfer alerts (see supabase/payments.sql) -----
+  get rpcUrl() { return `${window.APP_CONFIG.supabaseUrl}/rest/v1/rpc/report_incoming`; }
+  async listIncoming(limit = 20) {
+    const { data, error } = await this.sb.from('incoming_payments').select('*').order('received_at', { ascending: false }).limit(limit);
+    if (error) return []; // payments.sql not installed yet
+    return data;
+  }
+  async markIncomingSeen(ids) { if (ids.length) await this.sb.from('incoming_payments').update({ seen: true }).in('id', ids); }
+  async undoIncoming(row) {
+    if (row.settlement_id) this._ok(await this.sb.from('settlements').delete().eq('id', row.settlement_id));
+    this._ok(await this.sb.from('incoming_payments').update({ status: 'ignored', settlement_id: null, seen: true }).eq('id', row.id));
+  }
+  async recordIncoming(row, date) {
+    const s = await this.saveSettlement({ date, from_person: 'b', amount: row.amount, note: 'พร้อมเพย์' });
+    this._ok(await this.sb.from('incoming_payments').update({ status: 'recorded', settlement_id: s.id, seen: true }).eq('id', row.id));
+  }
+  async getWebhook() {
+    const { data, error } = await this.sb.from('webhook_config').select('*').eq('id', 1).maybeSingle();
+    return error ? null : data;
+  }
+  async saveWebhook(w) {
+    this._ok(await this.sb.from('webhook_config').update({ auto_settle: w.auto_settle, sender_filter: w.sender_filter || null }).eq('id', 1));
+  }
+  async sendTestIncoming(token) {
+    const r = await fetch(this.rpcUrl, {
+      method: 'POST',
+      headers: { apikey: window.APP_CONFIG.supabaseAnonKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, message: 'TEST เงินเข้า 1.00 บาท จาก ทดสอบระบบ' }),
+    });
+    if (!r.ok) throw new Error((await r.text()).slice(0, 200));
   }
 }
 

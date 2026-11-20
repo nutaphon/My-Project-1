@@ -43,6 +43,7 @@ async function start() {
     await reload();
     if (!state.listening) {
       state.listening = true;
+      state.store.onIncoming = handleIncoming;
       state.store.subscribe(debounce(async () => { await reload(); if (!state.batch) render(); }, 400));
       document.addEventListener('visibilitychange', async () => {
         if (document.visibilityState === 'visible' && !state.batch && state.session) { await reload(); render(); }
@@ -50,6 +51,7 @@ async function start() {
     }
   } catch (e) { toast(t('error', { msg: e.message }), true); }
   render();
+  loadAlerts();
 }
 
 async function reload() {
@@ -80,6 +82,7 @@ function renderShell() {
         </button>`).join('')}
     </nav>
     <div id="modal" class="modal hidden"></div>
+    <div id="alerts" class="alerts"></div>
     <div id="toast" class="toast hidden"></div>`;
 }
 
@@ -702,6 +705,7 @@ function viewSettings(v) {
       ${st.mode === 'cloud' ? `<p class="muted">${esc(t('signedInAs', { email: state.session?.user?.email || '' }))}</p>
         <button class="btn btn-ghost" data-action="signout">${t('signOut')}</button>` : ''}
     </section>
+    ${st.mode === 'cloud' ? `<section class="card" id="alerts-setup"><h3>💰 ${t('alertsTitle')}</h3><div class="muted">${t('loading')}</div></section>` : ''}
     <section class="card">
       <h3>${t('backup')}</h3>
       <div class="btn-row">
@@ -713,6 +717,7 @@ function viewSettings(v) {
       </div>
     </section>
     <p class="muted center small">${t('tagline')}</p>`;
+  if (st.mode === 'cloud') fillAlertsSetup();
 }
 
 function download(name, text, type) {
@@ -762,6 +767,95 @@ function toast(msg, isErr = false) {
   const el = $('#toast'); if (!el) return alert(msg);
   el.textContent = msg; el.className = 'toast' + (isErr ? ' err' : '');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.add('hidden'), 2600);
+}
+
+
+// ---------- incoming-transfer alerts (K PLUS → MacroDroid → Supabase → here) ----------
+state.alerts = [];
+const showable = (r) => !r.seen && (r.status !== 'ignored' || /^TEST/i.test(r.message));
+async function loadAlerts() {
+  const rows = await state.store.listIncoming(20);
+  state.alerts = rows.filter(showable).reverse();
+  renderAlerts();
+}
+async function handleIncoming(row) {
+  if (!showable(row)) return;
+  state.alerts.push(row);
+  renderAlerts();
+  const title = /^TEST/i.test(row.message) ? t('alertTestTitle') : t('alertTitle', { amt: money(row.amount) });
+  const body = row.sender ? t('alertFrom', { name: row.sender }) : row.message.slice(0, 80);
+  try {
+    if ('Notification' in window && Notification.permission === 'granted' && document.visibilityState !== 'visible') new Notification(title, { body, icon: 'icon.svg', tag: row.id });
+  } catch {}
+  try { navigator.vibrate?.(200); } catch {}
+}
+function renderAlerts() {
+  const box = $('#alerts'); if (!box) return;
+  box.innerHTML = state.alerts.map((r) => {
+    const test = /^TEST/i.test(r.message);
+    const time = new Date(r.received_at).toLocaleString(locale(), { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    return `<div class="alert ${test ? 'alert-test' : ''}" data-alert="${esc(r.id)}">
+      <div class="alert-ic">${test ? '🧪' : '💰'}</div>
+      <div class="alert-main">
+        <strong>${test ? t('alertTestTitle') : esc(t('alertTitle', { amt: money(r.amount) }))}</strong>
+        <div class="small">${r.sender ? esc(t('alertFrom', { name: r.sender })) + ' · ' : ''}${time}</div>
+        <div class="small alert-status">${test ? t('alertTestBody') : r.status === 'recorded' ? '✓ ' + esc(t('alertRecorded', { name: nameOf('b') })) : esc(t('alertAsk', { name: nameOf('b') }))}</div>
+        <div class="alert-actions">
+          ${r.status === 'new' && !test ? `<button class="btn btn-primary sm" data-action="alert-record">${esc(t('alertRecordBtn', { name: nameOf('b') }))}</button>` : ''}
+          <button class="btn btn-ghost sm" data-action="alert-ok">${t('alertOk')}</button>
+          ${r.status === 'recorded' ? `<button class="btn btn-ghost sm danger" data-action="alert-undo">${esc(t('alertUndo', { name: nameOf('b') }))}</button>` : ''}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+async function alertAction(el, kind) {
+  const id = el.closest('[data-alert]').dataset.alert;
+  const row = state.alerts.find((r) => r.id === id); if (!row) return;
+  try {
+    if (kind === 'ok') await state.store.markIncomingSeen([id]);
+    if (kind === 'undo') { await state.store.undoIncoming(row); toast(t('deleted')); }
+    if (kind === 'record') { await state.store.recordIncoming(row, todayStr()); toast(t('settledMsg')); }
+    state.alerts = state.alerts.filter((r) => r.id !== id);
+    renderAlerts();
+    if (kind !== 'ok') { await reload(); if (!state.batch) render(); }
+  } catch (err) { toast(t('error', { msg: err.message }), true); }
+}
+
+async function fillAlertsSetup() {
+  const box = $('#alerts-setup'); if (!box) return;
+  const w = await state.store.getWebhook();
+  if (!$('#alerts-setup')) return;
+  if (!w) {
+    box.innerHTML = `<h3>💰 ${t('alertsTitle')}</h3><p class="warn">${t('alertsNeedSql')}</p>`;
+    return;
+  }
+  const cfg = window.APP_CONFIG;
+  const body = `{"token":"${w.token}","message":"[notification_title] [notification]"}`;
+  const copyRow = (label, val) => `<div class="copy-row"><span class="small muted">${label}</span>
+    <div class="copy-box"><code>${esc(val)}</code><button class="btn btn-ghost sm" data-action="copy" data-val="${esc(val)}">${t('copy')}</button></div></div>`;
+  const perm = 'Notification' in window ? Notification.permission : 'unsupported';
+  box.innerHTML = `
+    <h3>💰 ${t('alertsTitle')}</h3>
+    <p class="small">${t('alertsIntro', { name: nameOf('b') })}</p>
+    <label class="switch-row"><input type="checkbox" id="auto-settle" ${w.auto_settle ? 'checked' : ''}> ${esc(t('autoSettle', { name: nameOf('b') }))}</label>
+    <label class="field"><span>${t('senderFilter')}</span><input type="text" id="sender-filter" value="${esc(w.sender_filter || '')}" placeholder="${t('senderFilterPh')}"></label>
+    <button class="btn btn-ghost sm" data-action="save-webhook">${t('save')}</button>
+    ${perm !== 'unsupported' && perm !== 'granted' ? `<button class="btn btn-ghost sm" data-action="notif-perm">🔔 ${t('allowNotif')}</button>` : ''}
+    <details class="more">
+      <summary>📲 ${t('macroTitle')}</summary>
+      <ol class="steps small">
+        <li>${t('macro1')}</li>
+        <li>${t('macro2')}</li>
+        <li>${t('macro3')}</li>
+      </ol>
+      ${copyRow('URL', state.store.rpcUrl)}
+      ${copyRow('Header: apikey', cfg.supabaseAnonKey)}
+      ${copyRow('Header: Content-Type', 'application/json')}
+      ${copyRow('Body', body)}
+      <p class="small muted">${t('macro4')}</p>
+    </details>
+    <button class="btn btn-ghost sm" data-action="test-incoming">🧪 ${t('testAlert')}</button>`;
 }
 
 // ---------- events ----------
@@ -820,6 +914,25 @@ document.addEventListener('click', async (ev) => {
     case 'toggle-img': p.showImg = !p.showImg; return refreshCard(c);
     case 'reread': p.ocr = { status: 'queued' }; refreshCard(c); return processQueue();
     case 'save-all': return saveAll();
+    case 'alert-ok': return alertAction(el, 'ok');
+    case 'alert-undo': if (!confirm(t('confirmDelete'))) return; return alertAction(el, 'undo');
+    case 'alert-record': return alertAction(el, 'record');
+    case 'copy':
+      try { await navigator.clipboard.writeText(el.dataset.val); toast(t('copied')); } catch { prompt('', el.dataset.val); }
+      return;
+    case 'save-webhook':
+      try { await state.store.saveWebhook({ auto_settle: $('#auto-settle').checked, sender_filter: $('#sender-filter').value.trim() }); toast(t('saved')); }
+      catch (err) { toast(t('error', { msg: err.message }), true); }
+      return;
+    case 'notif-perm':
+      try { await Notification.requestPermission(); } catch {}
+      return fillAlertsSetup();
+    case 'test-incoming': {
+      const w = await state.store.getWebhook();
+      try { await state.store.sendTestIncoming(w.token); toast(t('testSent')); setTimeout(loadAlerts, 1500); }
+      catch (err) { toast(t('error', { msg: err.message }), true); }
+      return;
+    }
     case 'cancel':
       if (unsaved() && !confirm(t('confirmDiscard'))) return;
       return go('dashboard');

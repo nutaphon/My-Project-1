@@ -31,6 +31,15 @@ A mobile-first web app to split meal costs with your partner: slip uploads, per-
    alter table public.settings add column if not exists promptpay text;
    ```
 
+## 💰 แจ้งเตือนยอดเข้า (K PLUS + Android)
+
+เมื่อแฟนโอนเงินเข้าพร้อมเพย์ เว็บจะเด้งแจ้งเตือน "ยอดเข้าแล้ว ฿10 จาก …" และบันทึกเป็นการเคลียร์เงินให้อัตโนมัติ
+1. รัน `supabase/payments.sql` ใน SQL Editor หนึ่งครั้ง
+2. เปิดเว็บ → ตั้งค่า → **แจ้งเตือนยอดเข้า (K PLUS)** → ทำตามขั้นตอนตั้งค่า MacroDroid (มีปุ่มคัดลอก URL / header / body ให้)
+3. กด **ส่งแจ้งเตือนทดสอบ** เพื่อเช็ก
+
+ทุกยอดเงินเข้าจะถูกนับเป็นเงินจากแฟน (ปิดได้ หรือกำหนดคำที่ต้องมีในข้อความ เช่น ชื่อผู้โอน) ถ้าบันทึกผิด กด "ไม่ใช่ของแฟน" ในแจ้งเตือนเพื่อยกเลิก
+
 ## 🏗️ สถาปัตยกรรม / Architecture
 
 ```

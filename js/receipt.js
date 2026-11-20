@@ -4,14 +4,27 @@
 const TESSERACT_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
 
 // ---------- pure parsing (no DOM; unit-testable) ----------
-const PRICE_RE = /(-?\s?\d{1,3}(?:,\d{3})*[.,]\d{2})\s*[-]?\s*(?:฿|บาท|B)?\s*$/;
-const SKIP_RE = /(รวม|ยอด|สุทธิ|ทั้งสิ้น|total|sub ?total|ทอน|เงินสด|cash|change|vat|ภาษี|true ?money|wallet|บัตร|card|ชำระ|แต้ม|point|รับเงิน|คงเหลือ|balance|tax|ราคาก่อน|มูลค่า|amount|qr|promptpay|พร้อมเพย์|ref|เลขที่|pos|tel|โทร)/i;
-const TOTAL_RE = /(สุทธิ|ทั้งสิ้น|ยอดชำระ|ยอดรวม|รวม|net|grand ?total|total)/i;
-const DISCOUNT_RE = /(ส่วนลด|ลด|discount|คูปอง|coupon|promotion|โปร)/i;
+// price at end of line; tolerate OCR noise: "9.00N", "@.00ผ", "Q.00N", Thai digits
+const D = '[\\d๐-๙@QOoดค]';
+const PRICE_RE = new RegExp(`(-?\\s?${D}{1,3}(?:,\\d{3})*[.,]${D}{2})\\s*-?\\s*(?:[A-Za-zก-ฮะ-ฺเ-ํ*'"\\])|.]{0,3})?\\s*$`);
+// lines that are never products (payment, totals, 7-11 promos/missions/stamps)
+const SKIP_RE = /(ยอด|รวม|สุทธิ|สูทธิ|ทั้งสิ้น|total|ทอน|เงินสด|cash|change|vat|ภาษี|true|ทรู|ทร[ูุ]?ว|วอล|wallet|money|บัตร|card|ชำระ|แต้ม|point|รับเงิน|คงเหลือ|balance|tax|มูลค่า|amount|qr|promptpay|พร้อมเพย์|ref|เลขที่|tid|pos|tel|โทร|ภารกิ|ารกิ|ช[้็]?[อo]ป|ซ[้็]?[อo]ป|ครบ|สิทธิ|สิทธ|ทรธ|แลก|stamp|amb|คืน|cashback|\(บาท|บาท\)|7app|7-?app|all ?member)/i;
+const TOTAL_RE = /(ยอด|สุทธิ|สูทธิ|ทั้งสิ้น|รวม|net|grand ?total|total)/i;
+const DISCOUNT_RE = /(ส่วนลด|discount|คูปอง|coupon)/i;
 const TH_MONTHS = ['ม.ค', 'ก.พ', 'มี.ค', 'เม.ย', 'พ.ค', 'มิ.ย', 'ก.ค', 'ส.ค', 'ก.ย', 'ต.ค', 'พ.ย', 'ธ.ค'];
 
-const toNum = (s) => Number(String(s).replace(/\s/g, '').replace(/,(?=\d{3})/g, '').replace(',', '.'));
+const thaiDigits = (s) => s.replace(/[๐-๙]/g, (c) => String(c.charCodeAt(0) - 0x0E50));
+const toNum = (s) => Number(thaiDigits(String(s)).replace(/[@QOoดค]/g, '0').replace(/\s/g, '').replace(/,(?=\d{3})/g, '').replace(',', '.'));
 const pad = (n) => String(n).padStart(2, '0');
+
+/** Fix common Thai OCR artefacts (nikhahit + sara aa → sara am, doubled marks, etc.) */
+export function normThai(s) {
+  return s.normalize('NFC')
+    .replace(/ํา/g, 'ำ')               // ํา → ำ
+    .replace(/([่-๋])ํ/g, 'ํ$1')   // tone before nikhahit
+    .replace(/าํ/g, 'ำ')
+    .replace(/([ั-ฺ็-๎])\1+/g, '$1'); // doubled vowel/tone marks
+}
 
 function normYear(y) {
   y = Number(y);
@@ -21,6 +34,7 @@ function normYear(y) {
 }
 
 export function parseDate(text) {
+  text = thaiDigits(text);
   let m = text.match(/(\d{1,2})\s*[\/\-.]\s*(\d{1,2})\s*[\/\-.]\s*(\d{2,4})/);
   if (m) {
     const d = +m[1], mo = +m[2], y = normYear(m[3]);
@@ -36,7 +50,7 @@ export function parseDate(text) {
 }
 
 function cleanName(s) {
-  return s
+  return normThai(s)
     .replace(/^[\s๐-๙•·*°]+(?=\S)/, '')            // stray marks read as Thai digits / bullets
     .replace(/^\s*\d+\s*[xX×@]?\s+/, '')          // leading qty "1 " / "2 x "
     .replace(/\s+\d+\s*[@xX×]\s*\d+[.,]\d{2}\s*$/, '') // trailing "2 @ 15.00"
@@ -48,28 +62,69 @@ function cleanName(s) {
 /**
  * lines: array of strings (one per receipt line, top→bottom)
  * returns { date, total, items: [{ name, price, lineIdx }] }
+ * Items stop at the total line ("ยอดสุทธิ") — everything below is payment info.
  */
 export function parseReceiptLines(lines) {
   const items = [];
-  let total = null, date = null;
+  let total = null, date = null, ended = false;
   lines.forEach((raw, idx) => {
     const text = raw.replace(/\s+/g, ' ').trim();
     if (!text) return;
     if (!date) date = parseDate(text);
+    if (ended) return;
     const m = text.match(PRICE_RE);
     if (!m) return;
     let price = toNum(m[1]);
     if (!isFinite(price)) return;
     const before = text.slice(0, m.index).trim();
-    if (TOTAL_RE.test(before)) { total = price; return; }  // keep the last "total"-like line
+    if (TOTAL_RE.test(before) && items.length) { total = price; ended = true; return; }
     if (SKIP_RE.test(before)) return;
-    if (/\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}/.test(before)) return; // date/time line
+    if (/\d{1,2}[\/\-.:]\d{1,2}/.test(before) && /\d{2}[\/\-.]\d{2,4}/.test(before)) return; // date/time line
+    if (price === 0) return;                                // free promo lines (0.00)
     const name = cleanName(before);
     if (!name || name.replace(/[^\p{L}]/gu, '').length < 2) return;
-    if (DISCOUNT_RE.test(name) || /-\s*$/.test(text) || /^-/.test(m[1])) price = -Math.abs(price);
+    if (DISCOUNT_RE.test(name) || /^-/.test(m[1].trim())) price = -Math.abs(price);
     items.push({ name, price, lineIdx: idx });
   });
+  // No total keyword read? A line equal to the sum of everything above it is the total.
+  if (total == null) {
+    let run = 0;
+    for (let i = 0; i < items.length; i++) {
+      if (i >= 2 && Math.abs(items[i].price - run) < 0.01) { total = items[i].price; items.length = i; break; }
+      run += items[i].price;
+    }
+  }
   return { date, total, items };
+}
+
+// ---------- learning: correct OCR names using names you saved before ----------
+function lev(a, b) {
+  const m = a.length, n = b.length; if (!m) return n; if (!n) return m;
+  let prev = Array.from({ length: n + 1 }, (_, j) => j), cur = new Array(n + 1);
+  for (let i = 1; i <= m; i++) {
+    cur[0] = i;
+    for (let j = 1; j <= n; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    [prev, cur] = [cur, prev];
+  }
+  return prev[n];
+}
+// compare without spaces/punctuation/tone marks (the parts OCR gets wrong most)
+const squash = (s) => normThai(s).replace(/[\s\-_.()\u0E48-\u0E4C]/g, '').toLowerCase();
+/**
+ * known: [{ key, name }] — key is what OCR read last time (or the name itself), name is what you saved.
+ * Returns the saved name of the closest match if similar enough, else the original.
+ */
+export function correctName(name, known) {
+  const q = squash(name); if (q.length < 2) return name;
+  let best = null, bestScore = 0;
+  for (const { key, name: fixed } of known) {
+    const kk = squash(key); if (!kk) continue;
+    const k = fixed;
+    if (Math.abs(kk.length - q.length) > Math.max(kk.length, q.length) * 0.4) continue;
+    const score = 1 - lev(q, kk) / Math.max(q.length, kk.length);
+    if (score > bestScore) { bestScore = score; best = k; }
+  }
+  return bestScore >= 0.6 ? best : name;
 }
 
 // ---------- marks (pixel analysis) ----------
@@ -111,11 +166,11 @@ async function getWorker() {
  * Reads a receipt image. onProgress({status, progress}) is called while loading / reading.
  * Returns { date, total, items: [{ name, price, owner: 'a'|'b', marked }] }
  */
-export async function readReceipt(file, onProgress) {
+export async function readReceipt(file, onProgress, known = []) {
   progressCb = onProgress;
   const bmp = await createImageBitmap(file);
-  const targetW = Math.min(1600, Math.max(1000, bmp.width));
-  const s = targetW / bmp.width;
+  // small (compressed) screenshots read best at ~2×; full-size phone screenshots as-is (capped)
+  const s = bmp.width < 800 ? 2 : Math.min(1, 2000 / bmp.width);
   const c = document.createElement('canvas');
   c.width = Math.round(bmp.width * s); c.height = Math.round(bmp.height * s);
   const ctx = c.getContext('2d', { willReadFrequently: true });
@@ -142,6 +197,8 @@ export async function readReceipt(file, onProgress) {
   parsed.items.forEach((it, i) => {
     it.marked = scores[i] > floor && scores[i] > baseline * 3 + floor;
     it.owner = it.marked ? 'b' : 'a';
+    it.rawName = it.name;
+    it.name = correctName(it.name, known);
   });
   return parsed;
 }

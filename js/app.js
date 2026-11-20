@@ -15,7 +15,7 @@ const state = {
   settings: { name_a: '', name_b: '' },
   expenses: [], settlements: [],
   view: 'dashboard', month: monthOf(todayStr()), search: '',
-  draft: null, chart: null,
+  batch: null, chart: null,
 };
 const nameOf = (p) => (p === 'a' ? state.settings.name_a || 'A' : state.settings.name_b || 'B');
 const other = (p) => (p === 'a' ? 'b' : 'a');
@@ -42,9 +42,9 @@ async function start() {
     await reload();
     if (!state.listening) {
       state.listening = true;
-      state.store.subscribe(debounce(async () => { await reload(); if (!state.draft) render(); }, 400));
+      state.store.subscribe(debounce(async () => { await reload(); if (!state.batch) render(); }, 400));
       document.addEventListener('visibilitychange', async () => {
-        if (document.visibilityState === 'visible' && !state.draft && state.session) { await reload(); render(); }
+        if (document.visibilityState === 'visible' && !state.batch && state.session) { await reload(); render(); }
       });
     }
   } catch (e) { toast(t('error', { msg: e.message }), true); }
@@ -91,13 +91,8 @@ function render() {
 }
 
 function go(view) {
-  state.draft = null; state.view = view; render(); window.scrollTo({ top: 0 });
+  state.batch = null; state.view = view; render(); window.scrollTo({ top: 0 });
 }
-function openEditor(kind) {
-  closeModal(); state.draft = newDraft(kind); state.view = 'add'; render(); window.scrollTo({ top: 0 });
-  if (kind === 'store') $('#slip-input')?.click();
-}
-
 function monthNav() {
   const [y, m] = state.month.split('-').map(Number);
   const label = new Date(y, m - 1, 1).toLocaleDateString(locale(), { month: 'long', year: 'numeric' });
@@ -201,70 +196,119 @@ function drawTrend() {
   });
 }
 
-// ---------- editor (7-11 receipt / eating out / travel) ----------
-function newDraft(kind = 'store') {
-  const th = getLang() === 'th';
-  const items = kind === 'travel'
-    ? [{ name: t('rideThere'), price: '', owner: 'a' }]
-    : kind === 'food' ? [{ name: '', price: '', owner: 'b' }] : [];
+// ---------- editor: a batch of entries (many 7-11 receipts + eating out + rides), saved together ----------
+let keySeq = 0;
+function newSection(kind) {
   return {
-    id: null, kind, date: todayStr(), title: kind === 'store' ? '7-Eleven' : '', note: '', payer: 'a', items,
-    slip_path: null, slipFile: null, slipPreview: null, removeOldSlip: false,
-    ocr: null, // { status: 'loading'|'reading'|'done'|'error', p, msg }
-    showImg: false, manual: kind !== 'store', _th: th,
+    key: 's' + (++keySeq), kind, id: null, date: todayStr(), title: kind === 'store' ? '7-Eleven' : '', note: '', payer: 'a',
+    items: kind === 'travel' ? [{ name: t('rideThere'), price: '', owner: 'a' }]
+      : kind === 'food' ? [{ name: '', price: '', owner: 'b' }] : [],
+    slip_path: null, slipFile: null, slipPreview: null, _slipUrl: null, removeOldSlip: false,
+    ocr: null, ocrTotal: null, showImg: false,
   };
 }
-function draftFrom(e) {
+function sectionFrom(e) {
   const kind = kindOf(e);
   let items = (e.items && e.items.length) ? e.items.map((i) => ({ ...i, price: String(i.price) })) : [];
   if (!items.length) { // older 50/50 entries → show as two halves
     const s = shares(e);
     items = [{ name: e.title, price: String(s.a), owner: 'a' }, { name: e.title, price: String(s.b), owner: 'b' }];
   }
-  return {
-    ...e, kind, items, note: e.note || '', slipFile: null, slipPreview: null, removeOldSlip: false,
-    ocr: null, showImg: false, manual: true,
-  };
+  return { ...newSection(kind), ...e, kind, items, note: e.note || '', slipFile: null, slipPreview: null, removeOldSlip: false };
 }
-const draftItems = (d) => d.items.filter((i) => Number(i.price));
-const asExpense = (d) => ({ split: 'items', items: draftItems(d).map((i) => ({ ...i, price: Number(i.price) })), payer: d.payer });
+const B = () => state.batch;
+const secByKey = (k) => B()?.sections.find((s) => s.key === k);
+const ofKind = (k) => B().sections.filter((s) => s.kind === k);
+const validItems = (s) => s.items.filter((i) => Number(i.price));
+const secShares = (s) => shares({ split: 'items', items: validItems(s).map((i) => ({ ...i, price: Number(i.price) })) });
+
+function openEditor(kind) {
+  closeModal();
+  state.batch = { tab: kind, sections: kind === 'store' ? [] : [newSection(kind)], editing: false };
+  state.view = 'add'; render(); window.scrollTo({ top: 0 });
+  if (kind === 'store') $('#slip-input')?.click();
+}
+function editExpense(e) {
+  const s = sectionFrom(e);
+  state.batch = { tab: s.kind, sections: [s], editing: true };
+  state.view = 'add'; render(); window.scrollTo({ top: 0 });
+  if (e.slip_path) state.store.slipUrl(e.slip_path).then((u) => { s._slipUrl = u; refreshSection(s); }).catch(() => {});
+}
 
 function viewEditor(v) {
-  const d = state.draft || (state.draft = newDraft());
-  const k = d.kind;
-  const showItems = k !== 'store' || d.manual || d.items.length || d.ocr?.status === 'done';
+  const b = B() || (state.batch = { tab: 'store', sections: [], editing: false });
+  const k = b.tab;
+  const mine = ofKind(k);
+  const others = b.sections.filter((s) => s.kind !== k);
   v.innerHTML = `
-    <form id="exp-form" class="card form" autocomplete="off">
-      <div class="kind-tabs">${KINDS.map(([kk, e]) => `<button type="button" class="kind-tab ${kk === k ? 'on' : ''}" data-action="kind" data-kind="${kk}">${e} ${t('kindShort_' + kk)}</button>`).join('')}</div>
-      ${k === 'store' ? receiptBlock(d) : ''}
-      ${showItems ? `
-        <div class="row2">
-          <label class="field"><span>${t('date')}</span><input type="date" data-f="date" value="${esc(d.date)}" required></label>
-          <label class="field"><span>${t('place')}</span><input type="text" data-f="title" value="${esc(d.title)}" placeholder="${t('placePh_' + k)}" list="place-list"></label>
-        </div>
-        <datalist id="place-list">${[...new Set(state.expenses.filter((e) => kindOf(e) === k).map((e) => e.title).filter(Boolean))].slice(0, 30).map((p) => `<option value="${esc(p)}">`).join('')}</datalist>
-        <div class="field">
-          <span>${t('items')} <span class="hint-inline">· ${t('tapToToggle')}</span></span>
-          <div id="items">${d.items.map(itemRow).join('')}</div>
-          <div class="btn-row">
-            ${k === 'travel' ? `<button type="button" class="btn btn-ghost sm" data-action="add-item" data-name="${esc(t('rideThere'))}">${t('quickRide')} ${esc(t('rideThere'))}</button>
-              <button type="button" class="btn btn-ghost sm" data-action="add-item" data-name="${esc(t('rideBack'))}">${t('quickRide')} ${esc(t('rideBack'))}</button>` : ''}
-            <button type="button" class="btn btn-ghost sm" data-action="add-item">${t('addItem')}</button>
-          </div>
-        </div>
-        ${k !== 'store' ? `<div class="field">${slipBlockSimple(d)}</div>` : ''}
-        <label class="field"><span>${t('note')}</span><input type="text" data-f="note" value="${esc(d.note || '')}" placeholder="${t('notePh')}"></label>
-        <div class="field payer"><span>${t('whoPaid')}</span>
-          <div class="chips">${['a', 'b'].map((p) => `<button type="button" class="chip sm ${d.payer === p ? 'on' : ''}" data-action="payer" data-p="${p}">${esc(nameOf(p))}</button>`).join('')}</div>
-        </div>
-        <div id="summary" class="summary"></div>
-        <div class="form-actions">
-          <button type="button" class="btn btn-ghost" data-action="cancel">${t('cancel')}</button>
-          <button type="submit" class="btn btn-primary">${t('save')}</button>
+    <div class="editor">
+      <div class="kind-tabs sticky-tabs">${KINDS.map(([kk, e]) => {
+        const n = ofKind(kk).length;
+        return `<button type="button" class="kind-tab ${kk === k ? 'on' : ''}" data-action="tab" data-kind="${kk}">${e} ${t('kindShort_' + kk)}${n ? ` <span class="badge">${n}</span>` : ''}</button>`;
+      }).join('')}</div>
+      ${k === 'store' && !mine.length ? `
+        <div class="card form">
+          <button type="button" class="upload big" data-action="pick-slips">${t('uploadReceipts')}</button>
+          <p class="hint">💡 ${t('uploadHint')}</p>
+          <button type="button" class="link center" data-action="add-section" data-kind="store">${t('orTypeManually')}</button>
         </div>` : ''}
-      <input type="file" id="slip-input" accept="image/*" hidden>
-    </form>`;
-  updateSummary();
+      ${mine.map((s, i) => sectionCard(s, i, mine.length)).join('')}
+      ${mine.length && !b.editing ? `<button type="button" class="btn btn-ghost block add-more" data-action="${k === 'store' ? 'pick-slips' : 'add-section'}" data-kind="${k}">${t('addMore_' + k)}</button>` : ''}
+      ${others.length ? `<div class="others">
+        <div class="others-title">${t('alsoInBatch')}</div>
+        ${others.map((s) => {
+          const sh = secShares(s);
+          return `<button type="button" class="other-row" data-action="tab" data-kind="${s.kind}" data-scroll="${s.key}">
+            <span class="row-ic">${kindEmoji(s.kind)}</span>
+            <span class="row-main"><span class="row-title">${esc(t('fromKind', { kind: t('kindShort_' + s.kind) }))} · ${esc(s.title || t('kindShort_' + s.kind))}</span>
+              <span class="row-sub">${shortDate(s.date)} · ${validItems(s).length} ${t('itemsUnit')}${s.ocr && s.ocr.status !== 'done' && s.ocr.status !== 'error' ? ' · ⏳' : ''}</span></span>
+            <span class="row-amt"><strong>${money(sh.b)}</strong><span class="row-sub">${esc(nameOf('b'))}</span></span>
+          </button>`;
+        }).join('')}
+      </div>` : ''}
+      <input type="file" id="slip-input" accept="image/*" multiple hidden>
+      <input type="file" id="photo-input" accept="image/*" hidden>
+    </div>
+    <div class="savebar" id="savebar"></div>`;
+  refreshBar();
+}
+
+const shortDate = (d) => new Date(d + 'T00:00').toLocaleDateString(locale(), { day: 'numeric', month: 'short' });
+
+function sectionCard(s, i, n) {
+  const k = s.kind;
+  const busy = s.ocr && (s.ocr.status === 'queued' || s.ocr.status === 'loading' || s.ocr.status === 'reading');
+  return `<section class="card form section owner-scope" data-key="${s.key}" id="sec-${s.key}">
+    <div class="section-head">
+      <strong>${kindEmoji(k)} ${k === 'store' ? t('receiptNo', { n: i + 1 }) : esc(t('kindShort_' + k))}${n > 1 && k !== 'store' ? ` #${i + 1}` : ''}</strong>
+      ${B().editing ? '' : `<button type="button" class="icon-btn danger" data-action="del-section" aria-label="${t('delete')}">✕</button>`}
+    </div>
+    ${k === 'store' ? receiptBlock(s) : ''}
+    ${busy ? '' : `
+      <div class="row2">
+        <label class="field"><span>${t('date')}</span><input type="date" data-f="date" value="${esc(s.date)}" required></label>
+        <label class="field"><span>${t('place')}</span><input type="text" data-f="title" value="${esc(s.title)}" placeholder="${t('placePh_' + k)}" list="place-${k}"></label>
+      </div>
+      <datalist id="place-${k}">${[...new Set(state.expenses.filter((e) => kindOf(e) === k).map((e) => e.title).filter(Boolean))].slice(0, 30).map((p) => `<option value="${esc(p)}">`).join('')}</datalist>
+      <div class="field">
+        <span>${t('items')} <span class="hint-inline">· ${t('tapToToggle')}</span></span>
+        <div class="items">${s.items.map(itemRow).join('')}</div>
+        <div class="btn-row">
+          ${k === 'travel' ? `<button type="button" class="btn btn-ghost sm" data-action="add-item" data-name="${esc(t('rideThere'))}">${t('quickRide')} ${esc(t('rideThere'))}</button>
+            <button type="button" class="btn btn-ghost sm" data-action="add-item" data-name="${esc(t('rideBack'))}">${t('quickRide')} ${esc(t('rideBack'))}</button>` : ''}
+          <button type="button" class="btn btn-ghost sm" data-action="add-item">${t('addItem')}</button>
+        </div>
+      </div>
+      ${k !== 'store' ? `<div class="field">${photoBlock(s)}</div>` : ''}
+      <details class="more" ${s.note || s.payer === 'b' ? 'open' : ''}>
+        <summary>${t('moreOptions')}</summary>
+        <label class="field"><span>${t('note')}</span><input type="text" data-f="note" value="${esc(s.note || '')}" placeholder="${t('notePh')}"></label>
+        <div class="field"><span>${t('whoPaid')}</span>
+          <div class="chips">${['a', 'b'].map((p) => `<button type="button" class="chip sm ${s.payer === p ? 'on' : ''}" data-action="payer" data-p="${p}">${esc(nameOf(p))}</button>`).join('')}</div>
+        </div>
+      </details>
+      <div class="summary" data-summary>${summaryHtml(s)}</div>`}
+  </section>`;
 }
 
 function itemRow(it, i) {
@@ -276,117 +320,198 @@ function itemRow(it, i) {
   </div>`;
 }
 
-function slipSrc(d) { return d.slipPreview || (!d.removeOldSlip && d._slipUrl) || null; }
-function hasSlip(d) { return !!(d.slipPreview || (d.slip_path && !d.removeOldSlip)); }
+function slipSrc(s) { return s.slipPreview || (!s.removeOldSlip && s._slipUrl) || null; }
+function hasSlip(s) { return !!(s.slipPreview || (s.slip_path && !s.removeOldSlip)); }
 
-function receiptBlock(d) {
-  const o = d.ocr;
-  if (!hasSlip(d) && !d.manual) {
-    return `<button type="button" class="upload big" data-action="pick-slip">${t('uploadReceipt')}</button>
-      <p class="hint">💡 ${t('uploadHint')}</p>
-      <button type="button" class="link center" data-action="manual">${t('orTypeManually')}</button>`;
-  }
-  let status = '';
-  if (o?.status === 'loading') status = `<div class="ocr-status"><div class="spinner"></div>${t('loadingOcr')}</div>`;
-  else if (o?.status === 'reading') status = `<div class="ocr-status"><div class="progress"><div style="width:${o.p}%"></div></div>${t('reading', { p: o.p })}</div>`;
-  else if (o?.status === 'done') status = `<div class="ocr-ok">${o.msg}</div>`;
-  else if (o?.status === 'error') status = `<div class="ocr-err">${esc(o.msg)}</div>`;
-  const src = slipSrc(d);
+function ocrStatusHtml(s) {
+  const o = s.ocr;
+  if (!o) return '';
+  if (o.status === 'queued') return `<div class="ocr-status"><div class="spinner"></div>${t('queued')}</div>`;
+  if (o.status === 'loading') return `<div class="ocr-status"><div class="spinner"></div>${t('loadingOcr')}</div>`;
+  if (o.status === 'reading') return `<div class="ocr-status"><div class="progress"><div style="width:${o.p}%"></div></div>${t('reading', { p: o.p })}</div>`;
+  if (o.status === 'done') return `<div class="ocr-ok">${o.msg}</div>`;
+  if (o.status === 'error') return `<div class="ocr-err">${esc(o.msg)}</div>`;
+  return '';
+}
+
+function receiptBlock(s) {
+  const src = slipSrc(s);
   return `<div class="receipt-box">
-      ${hasSlip(d) ? `<div class="receipt-bar">
-        ${src ? `<button type="button" class="btn btn-ghost sm" data-action="toggle-img">🧾 ${d.showImg ? t('hideReceipt') : t('showReceipt')}</button>` : ''}
-        <button type="button" class="btn btn-ghost sm" data-action="pick-slip">${t('changePhoto')}</button>
-        ${d.slipFile ? `<button type="button" class="btn btn-ghost sm" data-action="reread">${t('rereadReceipt')}</button>` : ''}
-      </div>` : `<button type="button" class="upload" data-action="pick-slip">${t('uploadReceipt')}</button>`}
-      ${d.showImg && src ? `<img class="receipt-img" src="${esc(src)}" alt="receipt">` : ''}
-      ${status}
-    </div>`;
+    ${hasSlip(s) ? `<div class="receipt-bar">
+        ${src ? `<button type="button" class="btn btn-ghost sm" data-action="toggle-img">🧾 ${s.showImg ? t('hideReceipt') : t('showReceipt')}</button>` : ''}
+        ${s.slipFile && s.ocr?.status !== 'reading' && s.ocr?.status !== 'loading' ? `<button type="button" class="btn btn-ghost sm" data-action="reread">${t('rereadReceipt')}</button>` : ''}
+      </div>` : ''}
+    ${(s.showImg || (src && s.ocr && s.ocr.status !== 'done' && s.ocr.status !== 'error')) && src ? `<img class="receipt-img ${s.showImg ? '' : 'thumb'}" src="${esc(src)}" alt="receipt">` : ''}
+    <div id="ocr-${s.key}">${ocrStatusHtml(s)}</div>
+  </div>`;
 }
 
-function slipBlockSimple(d) {
-  if (!hasSlip(d)) return `<button type="button" class="upload" data-action="pick-slip">${t('attachPhoto')}</button>`;
-  const src = slipSrc(d);
+function photoBlock(s) {
+  if (!hasSlip(s)) return `<button type="button" class="upload" data-action="pick-photo">${t('attachPhoto')}</button>`;
+  const src = slipSrc(s);
   return `<div class="slip-prev">${src ? `<img src="${esc(src)}" alt="photo">` : '<div class="muted">🧾</div>'}
-    <div class="slip-actions"><button type="button" class="btn btn-ghost sm" data-action="pick-slip">${t('changePhoto')}</button>
-    <button type="button" class="btn btn-ghost sm danger" data-action="remove-slip">${t('removePhoto')}</button></div></div>`;
+    <div class="slip-actions"><button type="button" class="btn btn-ghost sm" data-action="pick-photo">${t('changePhoto')}</button>
+    <button type="button" class="btn btn-ghost sm danger" data-action="remove-photo">${t('removePhoto')}</button></div></div>`;
 }
 
-function updateSummary() {
-  const d = state.draft; const box = $('#summary'); if (!d || !box) return;
-  const s = shares(asExpense(d));
-  const tot = round2(s.a + s.b);
-  const debtor = other(d.payer);
-  const owe = s[debtor];
-  let warn = '';
-  if (d.ocrTotal && Math.abs(d.ocrTotal - tot) > 0.01) warn = `<div class="ocr-err small">⚠️ ${t('totalMismatch', { r: money(d.ocrTotal), s: money(tot) })}</div>`;
-  box.innerHTML = `
-    <div class="sum-grid">
-      <div><span class="dot dot-b"></span>${esc(t('sumPartner', { name: nameOf('b') }))}<strong>${money(s.b)}</strong></div>
-      <div><span class="dot dot-a"></span>${esc(t('sumMine', { name: nameOf('a') }))}<strong>${money(s.a)}</strong></div>
-      <div>${t('total')}<strong>${money(tot)}</strong></div>
+function summaryHtml(s) {
+  const sh = secShares(s);
+  const tot = round2(sh.a + sh.b);
+  const debtor = other(s.payer);
+  const owe = sh[debtor];
+  const warn = s.ocrTotal && Math.abs(s.ocrTotal - tot) > 0.01
+    ? `<div class="ocr-err small">⚠️ ${t('totalMismatch', { r: money(s.ocrTotal), s: money(tot) })}</div>` : '';
+  return `<div class="sum-grid">
+      <div><span><span class="dot dot-b"></span>${esc(t('sumPartner', { name: nameOf('b') }))}</span><strong>${money(sh.b)}</strong></div>
+      <div><span><span class="dot dot-a"></span>${esc(t('sumMine', { name: nameOf('a') }))}</span><strong>${money(sh.a)}</strong></div>
+      <div><span>${t('total')}</span><strong>${money(tot)}</strong></div>
     </div>
-    ${owe > 0 ? `<div class="sum-owe">${esc(t('thisOwes', { from: nameOf(debtor), to: nameOf(d.payer), amt: money(owe) }))}</div>` : ''}
+    ${owe > 0 ? `<div class="sum-owe">${esc(t('thisOwes', { from: nameOf(debtor), to: nameOf(s.payer), amt: money(owe) }))}</div>` : ''}
     ${warn}`;
 }
 
-async function runOcr() {
-  const d = state.draft; if (!d?.slipFile) return;
-  const file = d.slipFile;
-  d.ocr = { status: 'loading', p: 0 }; viewEditor($('#view'));
-  try {
-    const res = await readReceipt(file, (m) => {
-      if (state.draft !== d) return;
-      if (m.status === 'recognizing text') {
-        const p = Math.round((m.progress || 0) * 100);
-        if (d.ocr.status !== 'reading' || p - d.ocr.p >= 5) {
-          d.ocr = { status: 'reading', p };
-          const box = $('.receipt-box'); if (box) box.outerHTML = receiptBlock(d);
-        }
-      }
-    });
-    if (state.draft !== d) return;
-    if (res.date) d.date = res.date;
-    d.ocrTotal = res.total || null;
-    d.items = res.items.map((i) => ({ name: i.name, price: String(i.price), owner: i.owner }));
-    const marked = res.items.filter((i) => i.marked).length;
-    d.manual = true;
-    if (!d.items.length) {
-      d.items = [{ name: '', price: '', owner: 'b' }];
-      d.ocr = { status: 'error', msg: t('readNone') };
-    } else {
-      d.ocr = { status: 'done', msg: t('readDone', { n: d.items.length }) + (marked ? `<br>✏️ ${esc(t('readMarked', { n: marked, name: nameOf('b') }))}` : '') };
-    }
-  } catch (e) {
-    if (state.draft !== d) return;
-    d.manual = true;
-    if (!d.items.length) d.items = [{ name: '', price: '', owner: 'b' }];
-    d.ocr = { status: 'error', msg: t('error', { msg: e.message }) };
-  }
-  viewEditor($('#view'));
+function refreshSection(s) {
+  const el = document.getElementById('sec-' + s.key);
+  if (!el) return;
+  const list = ofKind(s.kind);
+  el.outerHTML = sectionCard(s, list.indexOf(s), list.length);
+  refreshBar();
+}
+function refreshSummary(s) {
+  const el = document.querySelector(`#sec-${s.key} [data-summary]`);
+  if (el) el.innerHTML = summaryHtml(s);
+  refreshBar();
+}
+function refreshBar() {
+  const bar = $('#savebar'); if (!bar || !B()) return;
+  const secs = B().sections.filter((s) => validItems(s).length);
+  let owe = 0;
+  for (const s of secs) { const sh = secShares(s); owe += s.payer === 'a' ? sh.b : -sh.a; }
+  const busy = B().sections.some((s) => s.ocr && ['queued', 'loading', 'reading'].includes(s.ocr.status));
+  bar.innerHTML = `
+    <div class="savebar-info"><span>${t('batchCount', { n: secs.length })}</span>
+      <strong>${owe >= 0 ? `${esc(nameOf('b'))} → ${esc(nameOf('a'))}` : `${esc(nameOf('a'))} → ${esc(nameOf('b'))}`} ${money(Math.abs(owe))}</strong></div>
+    <button type="button" class="btn btn-ghost" data-action="cancel">${t('cancel')}</button>
+    <button type="button" class="btn btn-primary" data-action="save-all" ${busy || !secs.length ? 'disabled' : ''}>${busy ? '⏳' : ''} ${B().editing ? t('save') : t('saveAll', { n: secs.length })}</button>`;
+  // keep tab badges in sync
+  document.querySelectorAll('.kind-tab').forEach((el) => {
+    const n = ofKind(el.dataset.kind).length;
+    let badge = el.querySelector('.badge');
+    if (n && !badge) { badge = document.createElement('span'); badge.className = 'badge'; el.append(' ', badge); }
+    if (badge) { if (n) badge.textContent = n; else badge.remove(); }
+  });
 }
 
-async function saveDraft() {
-  const d = state.draft;
-  const items = draftItems(d).map((i) => ({ name: i.name.trim() || t('kindShort_' + d.kind), price: round2(i.price), owner: i.owner }));
-  const total = itemsTotal(items);
-  if (!items.length || !(total > 0)) return toast(t('errAmount'), true);
-  const btn = $('#exp-form button[type=submit]'); btn.disabled = true; btn.textContent = t('saving');
+// ----- OCR queue (one receipt at a time; the others wait) -----
+let ocrBusy = false;
+function addReceipts(files) {
+  const b = B();
+  const added = [...files].map((f) => {
+    const s = newSection('store');
+    s.slipFile = f; s.slipPreview = URL.createObjectURL(f); s.ocr = { status: 'queued' };
+    b.sections.push(s);
+    return s;
+  });
+  b.tab = 'store';
+  viewEditor($('#view'));
+  document.getElementById('sec-' + added[0].key)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  processQueue();
+}
+async function processQueue() {
+  if (ocrBusy) return;
+  ocrBusy = true;
   try {
-    let slip_path = d.removeOldSlip ? null : d.slip_path;
-    if (d.slipFile) { btn.textContent = t('uploading'); slip_path = await state.store.uploadSlip(d.slipFile); }
-    if ((d.slipFile || d.removeOldSlip) && d.slip_path && d.slip_path !== slip_path) await state.store.removeSlip(d.slip_path);
-    await state.store.saveExpense({
-      id: d.id || undefined, created_at: d.created_at, date: d.date, category: d.kind,
-      title: d.title.trim() || t('kindShort_' + d.kind), payer: d.payer, split: 'items',
-      total, items, slip_path, note: (d.note || '').trim() || null,
-    });
+    for (;;) {
+      const s = B()?.sections.find((x) => x.ocr?.status === 'queued');
+      if (!s) break;
+      await ocrSection(s);
+    }
+  } finally { ocrBusy = false; }
+}
+/** Names you saved before (+ what OCR read for them) — used to auto-correct new receipts. */
+function knownItemNames() {
+  const out = [], seen = new Set();
+  const add = (key, name) => { const id = key + '\u0000' + name; if (!seen.has(id)) { seen.add(id); out.push({ key, name }); } };
+  for (const e of state.expenses) if (kindOf(e) === 'store') for (const i of e.items || []) {
+    if (!i.name || i.name.length < 2) continue;
+    add(i.name, i.name);
+    if (i.ocr) add(i.ocr, i.name);
+  }
+  return out;
+}
+async function ocrSection(s) {
+  const batch = B();
+  const setStatus = (o) => {
+    s.ocr = o;
+    const el = document.getElementById('ocr-' + s.key);
+    if (el) el.innerHTML = ocrStatusHtml(s); else if (B() === batch && batch.tab === 'store') refreshSection(s);
+  };
+  setStatus({ status: 'loading' });
+  try {
+    const res = await readReceipt(s.slipFile, (m) => {
+      if (m.status === 'recognizing text') {
+        const p = Math.round((m.progress || 0) * 100);
+        if (s.ocr.status !== 'reading' || p - s.ocr.p >= 5) setStatus({ status: 'reading', p });
+      }
+    }, knownItemNames());
+    if (res.date) s.date = res.date;
+    s.ocrTotal = res.total || null;
+    s.items = res.items.map((i) => ({ name: i.name, price: String(i.price), owner: i.owner, ocr: i.rawName }));
+    const marked = res.items.filter((i) => i.marked).length;
+    if (!s.items.length) {
+      s.items = [{ name: '', price: '', owner: 'b' }];
+      s.ocr = { status: 'error', msg: t('readNone') };
+    } else {
+      s.ocr = { status: 'done', msg: t('readDone', { n: s.items.length }) + (marked ? `<br>✏️ ${esc(t('readMarked', { n: marked, name: nameOf('b') }))}` : '') };
+    }
+  } catch (e) {
+    if (!s.items.length) s.items = [{ name: '', price: '', owner: 'b' }];
+    s.ocr = { status: 'error', msg: t('error', { msg: e.message }) };
+  }
+  if (B() !== batch) return;
+  if (batch.tab === 'store') refreshSection(s); else viewEditor($('#view'));
+}
+
+async function saveAll() {
+  const b = B();
+  const secs = b.sections.filter((s) => validItems(s).length);
+  for (const s of secs) {
+    const items = validItems(s);
+    if (!(itemsTotal(items.map((i) => ({ price: Number(i.price) }))) > 0)) {
+      document.getElementById('sec-' + s.key)?.scrollIntoView({ behavior: 'smooth' });
+      return toast(t('errAmount'), true);
+    }
+  }
+  if (!secs.length) return toast(t('errAmount'), true);
+  const btn = $('[data-action=save-all]'); btn.disabled = true;
+  let done = 0;
+  try {
+    for (const s of secs) {
+      btn.textContent = t('savingN', { i: done + 1, n: secs.length });
+      const items = validItems(s).map((i) => {
+        const it = { name: i.name.trim() || t('kindShort_' + s.kind), price: round2(i.price), owner: i.owner };
+        if (i.ocr && i.ocr !== it.name) it.ocr = i.ocr; // remember OCR text → your fix (auto-correct next time)
+        return it;
+      });
+      let slip_path = s.removeOldSlip ? null : s.slip_path;
+      if (s.slipFile) slip_path = await state.store.uploadSlip(s.slipFile);
+      if ((s.slipFile || s.removeOldSlip) && s.slip_path && s.slip_path !== slip_path) await state.store.removeSlip(s.slip_path);
+      await state.store.saveExpense({
+        id: s.id || undefined, created_at: s.created_at, date: s.date, category: s.kind,
+        title: s.title.trim() || t('kindShort_' + s.kind), payer: s.payer, split: 'items',
+        total: itemsTotal(items), items, slip_path, note: (s.note || '').trim() || null,
+      });
+      b.sections = b.sections.filter((x) => x !== s); // saved → remove from batch (safe to retry the rest)
+      done++;
+    }
     await reload();
-    toast(t('saved'));
-    state.month = monthOf(d.date);
+    toast(t('savedN', { n: done }));
+    state.month = monthOf(secs[0].date);
     go('dashboard');
   } catch (e) {
-    toast(e.message === 'localStorageFull' ? t('localWarn') : t('error', { msg: e.message }), true);
-    btn.disabled = false; btn.textContent = t('save');
+    await reload().catch(() => {});
+    toast((e.message === 'localStorageFull' ? t('localWarn') : t('error', { msg: e.message })) + (done ? ` (${t('savedN', { n: done })})` : ''), true);
+    viewEditor($('#view'));
   }
 }
 
@@ -567,53 +692,71 @@ function toast(msg, isErr = false) {
 }
 
 // ---------- events ----------
-const rerenderEditor = () => viewEditor($('#view'));
+let photoTarget = null;
 
 document.addEventListener('click', async (ev) => {
   const el = ev.target.closest('[data-nav],[data-action],[data-open]');
   if (!el) { if (ev.target.id === 'modal') closeModal(); return; }
-  const d = state.draft;
+  const secEl = el.closest('.section');
+  const s = secEl ? secByKey(secEl.dataset.key) : null;
 
-  if (el.dataset.nav) { closeModal(); return go(el.dataset.nav); }
+  if (el.dataset.nav) {
+    if (state.view === 'add' && B()?.sections.some((x) => validItems(x).length) && !confirm(t('confirmDiscard'))) return;
+    closeModal(); return go(el.dataset.nav);
+  }
   if (el.dataset.open) return openExpense(el.dataset.open);
 
   switch (el.dataset.action) {
     case 'lang': setLang(getLang() === 'th' ? 'en' : 'th'); return state.session ? (renderShell(), render()) : renderLogin();
     case 'set-lang': setLang(el.dataset.l); renderShell(); return render();
     case 'month': state.month = shiftMonth(state.month, +el.dataset.d); return render();
-    case 'add-menu': return addMenu();
+    case 'add-menu':
+      if (state.view === 'add') return; // already in the editor — use the tabs
+      return addMenu();
     case 'new': return openEditor(el.dataset.kind);
-    case 'kind': {
-      if (d.kind === el.dataset.kind) return;
-      const keep = d.items.some((i) => Number(i.price));
-      const nd = newDraft(el.dataset.kind);
-      if (keep) Object.assign(nd, { items: d.items, manual: true });
-      Object.assign(nd, { id: d.id, created_at: d.created_at, date: d.date, note: d.note, payer: d.payer,
-        slip_path: d.slip_path, slipFile: d.slipFile, slipPreview: d.slipPreview, _slipUrl: d._slipUrl, removeOldSlip: d.removeOldSlip });
-      state.draft = nd; return rerenderEditor();
+    case 'tab': {
+      const k = el.dataset.kind, b = B();
+      b.tab = k;
+      if (k !== 'store' && !ofKind(k).length && !b.editing) b.sections.push(newSection(k));
+      viewEditor($('#view'));
+      const target = el.dataset.scroll ? document.getElementById('sec-' + el.dataset.scroll) : null;
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' }); else window.scrollTo({ top: 0 });
+      return;
     }
-    case 'manual': d.manual = true; d.items = [{ name: '', price: '', owner: 'b' }]; return rerenderEditor();
-    case 'toggle-owner': { const i = +el.closest('.item-row').dataset.i; d.items[i].owner = d.items[i].owner === 'b' ? 'a' : 'b'; return rerenderEditor(); }
-    case 'payer': d.payer = el.dataset.p; return rerenderEditor();
-    case 'add-item':
-      d.items.push({ name: el.dataset.name || '', price: '', owner: d.kind === 'travel' ? 'a' : 'b' });
-      rerenderEditor();
-      return $(`#items .item-row:last-child input[data-item=${el.dataset.name ? 'price' : 'name'}]`)?.focus();
-    case 'del-item': { const i = +el.closest('.item-row').dataset.i; d.items.splice(i, 1); return rerenderEditor(); }
-    case 'pick-slip': return $('#slip-input').click();
-    case 'remove-slip': d.slipFile = null; d.slipPreview = null; d.removeOldSlip = true; return rerenderEditor();
-    case 'toggle-img': d.showImg = !d.showImg; return rerenderEditor();
-    case 'reread': return runOcr();
-    case 'cancel': return go('dashboard');
+    case 'pick-slips': return $('#slip-input').click();
+    case 'add-section': {
+      const ns = newSection(el.dataset.kind); B().sections.push(ns); viewEditor($('#view'));
+      document.getElementById('sec-' + ns.key)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    case 'del-section':
+      if (validItems(s).length && !confirm(t('confirmDelete'))) return;
+      B().sections = B().sections.filter((x) => x !== s);
+      if (s.slipPreview) URL.revokeObjectURL(s.slipPreview);
+      return viewEditor($('#view'));
+    case 'toggle-owner': { const i = +el.closest('.item-row').dataset.i; s.items[i].owner = s.items[i].owner === 'b' ? 'a' : 'b'; return refreshSection(s); }
+    case 'payer': s.payer = el.dataset.p; return refreshSection(s);
+    case 'add-item': {
+      s.items.push({ name: el.dataset.name || '', price: '', owner: s.kind === 'travel' ? 'a' : 'b' });
+      refreshSection(s);
+      return document.querySelector(`#sec-${s.key} .item-row:last-child input[data-item=${el.dataset.name ? 'price' : 'name'}]`)?.focus();
+    }
+    case 'del-item': { const i = +el.closest('.item-row').dataset.i; s.items.splice(i, 1); return refreshSection(s); }
+    case 'toggle-img': s.showImg = !s.showImg; return refreshSection(s);
+    case 'reread': s.ocr = { status: 'queued' }; refreshSection(s); return processQueue();
+    case 'pick-photo': photoTarget = s; return $('#photo-input').click();
+    case 'remove-photo': s.slipFile = null; s.slipPreview = null; s.removeOldSlip = true; return refreshSection(s);
+    case 'save-all': return saveAll();
+    case 'cancel':
+      if (B()?.sections.some((x) => validItems(x).length) && !confirm(t('confirmDiscard'))) return;
+      return go('dashboard');
     case 'close-modal': return closeModal();
     case 'from':
       el.parentElement.querySelectorAll('.chip').forEach((c) => c.classList.toggle('on', c === el));
       $('#settle-form [name=from_person]').value = el.dataset.p; return;
     case 'edit-exp': {
       const e = state.expenses.find((x) => x.id === el.dataset.id); closeModal();
-      state.draft = draftFrom(e); state.view = 'add'; render(); window.scrollTo({ top: 0 });
-      if (e.slip_path) state.store.slipUrl(e.slip_path).then((u) => { if (state.draft?.id === e.id) { state.draft._slipUrl = u; rerenderEditor(); } }).catch(() => {});
-      return;
+      return editExpense(e);
     }
     case 'del-exp': {
       if (!confirm(t('confirmDelete'))) return;
@@ -636,26 +779,25 @@ document.addEventListener('click', async (ev) => {
 });
 
 document.addEventListener('input', (ev) => {
-  const el = ev.target, d = state.draft;
+  const el = ev.target;
   if (el.dataset.action === 'search') {
     state.search = el.value; const pos = el.selectionStart;
-    viewHistory($('#view')); const s = $('.search'); s.focus(); s.setSelectionRange(pos, pos); return;
+    viewHistory($('#view')); const q = $('.search'); q.focus(); q.setSelectionRange(pos, pos); return;
   }
-  if (!d) return;
-  if (el.dataset.f) { d[el.dataset.f] = el.value; return updateSummary(); }
-  if (el.dataset.item) { const i = +el.closest('.item-row').dataset.i; d.items[i][el.dataset.item] = el.value; updateSummary(); }
+  const secEl = el.closest('.section'); if (!secEl) return;
+  const s = secByKey(secEl.dataset.key); if (!s) return;
+  if (el.dataset.f) { s[el.dataset.f] = el.value; return refreshSummary(s); }
+  if (el.dataset.item) { const i = +el.closest('.item-row').dataset.i; s.items[i][el.dataset.item] = el.value; refreshSummary(s); }
 });
 
 document.addEventListener('change', async (ev) => {
   const el = ev.target;
-  if (el.id === 'slip-input' && el.files[0]) {
-    const d = state.draft; d.slipFile = el.files[0];
-    if (d.slipPreview) URL.revokeObjectURL(d.slipPreview);
-    d.slipPreview = URL.createObjectURL(el.files[0]);
-    d.removeOldSlip = false;
-    el.value = '';
-    if (d.kind === 'store') return runOcr();
-    return rerenderEditor();
+  if (el.id === 'slip-input' && el.files.length) { const files = [...el.files]; el.value = ''; return addReceipts(files); }
+  if (el.id === 'photo-input' && el.files[0] && photoTarget) {
+    const s = photoTarget; photoTarget = null;
+    if (s.slipPreview) URL.revokeObjectURL(s.slipPreview);
+    s.slipFile = el.files[0]; s.slipPreview = URL.createObjectURL(el.files[0]); s.removeOldSlip = false; el.value = '';
+    return refreshSection(s);
   }
   if (el.id === 'import-input' && el.files[0]) {
     try { await state.store.importAll(JSON.parse(await el.files[0].text())); await reload(); toast(t('imported')); render(); }
@@ -666,7 +808,6 @@ document.addEventListener('change', async (ev) => {
 document.addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const f = ev.target;
-  if (f.id === 'exp-form') return saveDraft();
   if (f.id === 'settle-form') {
     const fd = Object.fromEntries(new FormData(f));
     const amount = round2(fd.amount);

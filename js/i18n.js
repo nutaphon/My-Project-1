@@ -34,6 +34,11 @@ const dict = {
     thisOwes: '{from} owes {to} {amt}',
     errAmount: 'Please add at least one item with a price', saved: 'Saved ✓', deleted: 'Deleted',
     confirmDelete: 'Delete this?', saving: 'Saving…', uploading: 'Uploading photo…',
+    uploadReceipts: '📷 Upload 7-11 e-receipts (pick several at once)',
+    addMore_store: '📷 + Add more receipts', addMore_food: '+ Add another meal', addMore_travel: '+ Add another day',
+    alsoInBatch: 'Also in this batch', fromKind: 'From {kind}', itemsUnit: 'items', receiptNo: 'Receipt {n}',
+    moreOptions: 'Note / who paid', queued: 'Waiting to be read…', batchCount: '{n} entries',
+    saveAll: 'Save all ({n})', savingN: 'Saving {i}/{n}…', savedN: 'Saved {n} ✓', confirmDiscard: 'Discard what you haven\'t saved?',
     // history
     search: 'Search…', noResults: 'Nothing found for this month.', partnerPart: '{name} {amt}',
     // settle
@@ -81,6 +86,11 @@ const dict = {
     thisOwes: '{from} ต้องจ่าย {to} {amt}',
     errAmount: 'ใส่อย่างน้อย 1 รายการที่มีราคานะ', saved: 'บันทึกแล้ว ✓', deleted: 'ลบแล้ว',
     confirmDelete: 'ต้องการลบรายการนี้?', saving: 'กำลังบันทึก…', uploading: 'กำลังอัปโหลดรูป…',
+    uploadReceipts: '📷 อัปโหลด E-receipt 7-11 (เลือกได้หลายใบพร้อมกัน)',
+    addMore_store: '📷 + เพิ่มสลิปอีก', addMore_food: '+ เพิ่มอีกมื้อ', addMore_travel: '+ เพิ่มอีกวัน',
+    alsoInBatch: 'รายการอื่นที่เพิ่มไว้ในรอบนี้', fromKind: 'จาก {kind}', itemsUnit: 'รายการ', receiptNo: 'ใบที่ {n}',
+    moreOptions: 'โน้ต / ใครจ่าย', queued: 'รอคิวอ่าน…', batchCount: '{n} รายการ',
+    saveAll: 'บันทึกทั้งหมด ({n})', savingN: 'กำลังบันทึก {i}/{n}…', savedN: 'บันทึกแล้ว {n} รายการ ✓', confirmDiscard: 'ทิ้งรายการที่ยังไม่บันทึก?',
     search: 'ค้นหา…', noResults: 'ไม่พบรายการในเดือนนี้', partnerPart: '{name} {amt}',
     recordPayment: 'บันทึกการโอนเงิน', amount: 'จำนวนเงิน', settlements: 'ประวัติการโอน', noSettlements: 'ยังไม่มีการโอนเงิน',
     paidTo: '{from} โอนให้ {to}', settledMsg: 'บันทึกการโอนแล้ว ✓',

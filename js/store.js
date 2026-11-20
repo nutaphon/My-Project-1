@@ -3,10 +3,11 @@ const LS_KEY = 'mealsplit:data:v1';
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
 
 /** Resize + compress an image file to a JPEG blob (keeps slips small). */
-export async function compressImage(file, maxSide = 1600, quality = 0.8) {
+export async function compressImage(file, maxW = 1100, quality = 0.8, maxH = 6000) {
   const bmp = await createImageBitmap(file).catch(() => null);
   if (!bmp) return file;
-  const scale = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+  // limit width (receipt screenshots are tall & narrow — keep them readable)
+  const scale = Math.min(1, maxW / bmp.width, maxH / bmp.height);
   const c = document.createElement('canvas');
   c.width = Math.round(bmp.width * scale);
   c.height = Math.round(bmp.height * scale);
@@ -45,7 +46,7 @@ class LocalStore {
     this.data.settlements.push(row); this._persist(); return row;
   }
   async deleteSettlement(id) { this.data.settlements = this.data.settlements.filter((x) => x.id !== id); this._persist(); }
-  async uploadSlip(blob) { return blobToDataURL(await compressImage(blob, 1200, 0.7)); }
+  async uploadSlip(blob) { return blobToDataURL(await compressImage(blob, 900, 0.7)); }
   async removeSlip() {}
   async slipUrl(path) { return path; }
   exportAll() { return JSON.parse(JSON.stringify(this.data)); }

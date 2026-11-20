@@ -52,6 +52,9 @@ export function daysInMonth(ym) {
   return new Date(y, m, 0).getDate();
 }
 
+/** Entry type: 'store' (7-11 receipt), 'food' (eating out), 'travel'. Older categories count as food. */
+export const kindOf = (e) => (e.category === 'store' || e.category === 'travel' ? e.category : 'food');
+
 /** Monthly stats for the dashboard. */
 export function monthStats(expenses, ym) {
   const list = expenses.filter((e) => monthOf(e.date) === ym);
@@ -62,7 +65,7 @@ export function monthStats(expenses, ym) {
     const s = shares(e);
     total += tot; a += s.a; b += s.b;
     if (e.payer === 'a') paidA += tot; else paidB += tot;
-    byCat[e.category] = (byCat[e.category] || 0) + tot;
+    byCat[kindOf(e)] = (byCat[kindOf(e)] || 0) + tot;
     const place = (e.title || '').trim();
     if (place) byPlace[place] = (byPlace[place] || 0) + tot;
     days.add(e.date);

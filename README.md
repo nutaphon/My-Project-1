@@ -22,6 +22,15 @@ A mobile-first web app to split meal costs with your partner: slip uploads, per-
 
 > การอ่านใบเสร็จใช้ [Tesseract.js](https://tesseract.projectnaptha.com/) ทำงานในเบราว์เซอร์ **ฟรี ไม่ต้องมี API key** ครั้งแรกจะโหลดข้อมูลภาษาไทยประมาณ 10 MB แล้วจะเร็วขึ้น
 
+## 📱 QR พร้อมเพย์
+
+หน้า **เคลียร์เงิน** จะแสดง QR พร้อมเพย์พร้อมยอดเงินที่แฟนต้องจ่าย ให้แฟนสแกนด้วยแอปธนาคารแล้วโอนได้ทันที
+1. ตั้งค่า → ใส่ **พร้อมเพย์ของเรา** (เบอร์โทร 10 หลัก / เลขบัตรประชาชน 13 หลัก) → บันทึก
+2. ถ้าใช้ Supabase ที่สร้างไว้ก่อนมีฟีเจอร์นี้ ให้รันคำสั่งนี้ใน SQL Editor หนึ่งครั้ง:
+   ```sql
+   alter table public.settings add column if not exists promptpay text;
+   ```
+
 ## 🏗️ สถาปัตยกรรม / Architecture
 
 ```

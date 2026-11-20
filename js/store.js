@@ -78,7 +78,9 @@ class SupabaseStore {
     return d || { name_a: '', name_b: '' };
   }
   async saveSettings(s) {
-    this._ok(await this.sb.from('settings').upsert({ id: 1, name_a: s.name_a, name_b: s.name_b }));
+    const { error } = await this.sb.from('settings').upsert({ id: 1, name_a: s.name_a, name_b: s.name_b, promptpay: s.promptpay || null });
+    if (error && /promptpay/i.test(error.message)) throw new Error('needPromptpayColumn');
+    if (error) throw error;
   }
   async listExpenses() {
     return this._ok(await this.sb.from('expenses').select('*').order('date', { ascending: false }).order('created_at', { ascending: false }));

@@ -1,6 +1,7 @@
 import { t, getLang, setLang, locale } from './i18n.js';
 import { createStore } from './store.js';
 import { readReceipt } from './receipt.js';
+import { promptPaySvg, normalizeId } from './promptpay.js';
 import { shares, balance, round2, itemsTotal, todayStr, monthOf, shiftMonth, monthStats, kindOf } from './calc.js';
 
 const KINDS = [['store', '🏪'], ['food', '🍜'], ['travel', '🛵']];
@@ -56,7 +57,7 @@ async function reload() {
     state.store.getSettings(), state.store.listExpenses(), state.store.listSettlements(),
   ]);
   const th = getLang() === 'th';
-  state.settings = { name_a: settings?.name_a || (th ? 'เรา' : 'Me'), name_b: settings?.name_b || (th ? 'แฟน' : 'Partner') };
+  state.settings = { name_a: settings?.name_a || (th ? 'เรา' : 'Me'), name_b: settings?.name_b || (th ? 'แฟน' : 'Partner'), promptpay: settings?.promptpay || '' };
   state.expenses = expenses.sort((x, y) => (y.date + (y.created_at || '')).localeCompare(x.date + (x.created_at || '')));
   state.settlements = settlements.sort((x, y) => y.date.localeCompare(x.date));
 }
@@ -628,6 +629,7 @@ function viewSettle(v) {
   const from = bal < 0 ? 'a' : 'b';
   v.innerHTML = `
     ${balanceCard(false)}
+    <section class="card qr-card" id="qr-card"></section>
     <form id="settle-form" class="card form">
       <h3>${t('recordPayment')}</h3>
       <div class="chips">${['b', 'a'].map((p) => `<button type="button" class="chip ${p === from ? 'on' : ''}" data-action="from" data-p="${p}">${esc(nameOf(p))} → ${esc(nameOf(other(p)))}</button>`).join('')}</div>
@@ -646,7 +648,38 @@ function viewSettle(v) {
         <span class="row-amt"><strong>${money(p.amount)}</strong>
           <button class="link danger" data-action="del-settle" data-id="${esc(p.id)}">${t('delete')}</button></span>
       </div>`).join('')}</div>`}`;
+  updateQr();
 }
+
+/** PromptPay QR for the partner to scan (only when the partner pays you). */
+let qrSeq = 0;
+async function updateQr() {
+  const box = $('#qr-card'); if (!box) return;
+  const form = $('#settle-form');
+  const from = form?.from_person.value;
+  const amount = round2(form?.amount.value);
+  if (from !== 'b') { box.hidden = true; return; }
+  box.hidden = false;
+  const id = normalizeId(state.settings.promptpay);
+  if (!id) {
+    box.innerHTML = `<div class="qr-empty">📱 ${t('qrSetup')}<button class="btn btn-ghost sm" data-nav="settings">${t('qrSetupBtn')}</button></div>`;
+    return;
+  }
+  const seq = ++qrSeq;
+  try {
+    const svg = await promptPaySvg(id, amount);
+    if (seq !== qrSeq) return;
+    box.innerHTML = `
+      <div class="qr-head"><span class="pp-logo">PP</span>
+        <div><strong>${t('qrTitle', { name: nameOf('b') })}</strong><div class="muted small">PromptPay · ${esc(maskId(id))} · ${esc(nameOf('a'))}</div></div></div>
+      <div class="qr-img">${svg}</div>
+      <div class="qr-amt">${amount > 0 ? money(amount) : t('qrAnyAmount')}</div>
+      <p class="muted small center">${t('qrHint')}</p>`;
+  } catch (err) {
+    box.innerHTML = `<div class="ocr-err">${esc(t('error', { msg: err.message }))}</div>`;
+  }
+}
+const maskId = (id) => id.length === 10 ? `${id.slice(0, 3)}-xxx-${id.slice(-4)}` : `${id.slice(0, 1)}-xxxx-xxxxx-${id.slice(-3)}`;
 
 // ---------- settings ----------
 function viewSettings(v) {
@@ -656,6 +689,7 @@ function viewSettings(v) {
       <h3>${t('names')}</h3>
       <label class="field"><span><span class="dot dot-a"></span>${t('nameA')}</span><input name="name_a" value="${esc(state.settings.name_a)}" maxlength="20"></label>
       <label class="field"><span><span class="dot dot-b"></span>${t('nameB')}</span><input name="name_b" value="${esc(state.settings.name_b)}" maxlength="20"></label>
+      <label class="field"><span>📱 ${t('promptpayLabel')}</span><input name="promptpay" inputmode="numeric" value="${esc(state.settings.promptpay || '')}" placeholder="${t('promptpayPh')}" maxlength="20"></label>
       <button class="btn btn-primary block" type="submit">${t('save')}</button>
     </form>
     <section class="card">
@@ -731,6 +765,7 @@ function toast(msg, isErr = false) {
 }
 
 // ---------- events ----------
+const updateQrSoon = debounce(updateQr, 250);
 const unsaved = () => state.view === 'add' && B()?.cards.some((c) => c.parts.some((p) => validItems(p).length));
 
 document.addEventListener('click', async (ev) => {
@@ -791,7 +826,7 @@ document.addEventListener('click', async (ev) => {
     case 'close-modal': return closeModal();
     case 'from':
       el.parentElement.querySelectorAll('.chip').forEach((x) => x.classList.toggle('on', x === el));
-      $('#settle-form [name=from_person]').value = el.dataset.p; return;
+      $('#settle-form [name=from_person]').value = el.dataset.p; return updateQr();
     case 'edit-exp': {
       const e = state.expenses.find((x) => x.id === el.dataset.id); closeModal();
       return editExpense(e);
@@ -822,6 +857,7 @@ document.addEventListener('input', (ev) => {
     state.search = el.value; const pos = el.selectionStart;
     viewHistory($('#view')); const q = $('.search'); q.focus(); q.setSelectionRange(pos, pos); return;
   }
+  if (el.name === 'amount' && el.closest('#settle-form')) return updateQrSoon();
   const cardEl = el.closest('.daycard'); if (!cardEl) return;
   const c = findCard(cardEl.dataset.card); if (!c) return;
   if (el.dataset.cf) { c[el.dataset.cf] = el.value; return; }
@@ -854,9 +890,11 @@ document.addEventListener('submit', async (ev) => {
   }
   if (f.id === 'names-form') {
     const fd = Object.fromEntries(new FormData(f));
-    state.settings = { name_a: fd.name_a.trim() || 'A', name_b: fd.name_b.trim() || 'B' };
-    try { await state.store.saveSettings(state.settings); toast(t('saved')); render(); }
-    catch (err) { toast(t('error', { msg: err.message }), true); }
+    const pp = fd.promptpay.trim();
+    if (pp && !normalizeId(pp)) return toast(t('promptpayInvalid'), true);
+    const next = { name_a: fd.name_a.trim() || 'A', name_b: fd.name_b.trim() || 'B', promptpay: pp ? normalizeId(pp) : '' };
+    try { await state.store.saveSettings(next); state.settings = next; toast(t('saved')); render(); }
+    catch (err) { toast(err.message === 'needPromptpayColumn' ? t('promptpayNeedSql') : t('error', { msg: err.message }), true); }
   }
   if (f.id === 'login-form') {
     const fd = Object.fromEntries(new FormData(f));

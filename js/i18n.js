@@ -43,6 +43,11 @@ const dict = {
     cardNo: 'Card {n}', addReceiptPart: '+ 🏪 7-11 receipt', addFoodPart: '+ 🍜 Eating out', addRidePart: '+ 🛵 Ride',
     part_store: '🏪 7-11', part_food: '🍜 Eating out', part_travel: '🛵 Rides', addRideItem: '+ Ride',
     liveTotal: 'Running total · {n} cards', waitReading: 'Reading…',
+    qrTitle: 'Scan to pay — for {name}', qrHint: 'Open any Thai banking app → Scan → amount is filled in. After the transfer, tap Save below.',
+    qrAnyAmount: 'Enter amount below', qrSetup: 'Add your PromptPay number in Settings to show a QR here.', qrSetupBtn: 'Settings →',
+    promptpayLabel: 'Your PromptPay (phone or ID card no.)', promptpayPh: 'e.g. 0812345678',
+    promptpayInvalid: 'PromptPay must be a 10-digit phone, 13-digit ID or 15-digit e-wallet number',
+    promptpayNeedSql: 'Run the PromptPay SQL in Supabase first (see README)',
     // history
     search: 'Search…', noResults: 'Nothing found for this month.', partnerPart: '{name} {amt}',
     // settle
@@ -99,6 +104,11 @@ const dict = {
     cardNo: 'ใบที่ {n}', addReceiptPart: '+ 🏪 ใบเสร็จ 7-11', addFoodPart: '+ 🍜 กินข้างนอก', addRidePart: '+ 🛵 ค่าวิน',
     part_store: '🏪 7-11', part_food: '🍜 กินข้างนอก', part_travel: '🛵 ค่าวิน', addRideItem: '+ ค่าวิน',
     liveTotal: 'ยอดรวมทุกใบ · {n} ใบ', waitReading: 'กำลังอ่าน…',
+    qrTitle: 'ให้{name}สแกนจ่าย', qrHint: 'เปิดแอปธนาคารไหนก็ได้ → สแกน → ยอดเงินขึ้นให้เอง โอนเสร็จแล้วกดบันทึกด้านล่าง',
+    qrAnyAmount: 'ใส่จำนวนเงินด้านล่าง', qrSetup: 'ใส่เบอร์พร้อมเพย์ในหน้าตั้งค่า เพื่อแสดง QR ตรงนี้', qrSetupBtn: 'ไปตั้งค่า →',
+    promptpayLabel: 'พร้อมเพย์ของเรา (เบอร์โทร หรือ เลขบัตรประชาชน)', promptpayPh: 'เช่น 0812345678',
+    promptpayInvalid: 'พร้อมเพย์ต้องเป็นเบอร์โทร 10 หลัก, เลขบัตร 13 หลัก หรือ e-wallet 15 หลัก',
+    promptpayNeedSql: 'ต้องรันคำสั่ง SQL พร้อมเพย์ใน Supabase ก่อน (ดู README)',
     search: 'ค้นหา…', noResults: 'ไม่พบรายการในเดือนนี้', partnerPart: '{name} {amt}',
     recordPayment: 'บันทึกการโอนเงิน', amount: 'จำนวนเงิน', settlements: 'ประวัติการโอน', noSettlements: 'ยังไม่มีการโอนเงิน',
     paidTo: '{from} โอนให้ {to}', settledMsg: 'บันทึกการโอนแล้ว ✓',

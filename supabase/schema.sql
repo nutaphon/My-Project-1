@@ -56,6 +56,7 @@ create table if not exists public.settings (
   name_b text
 );
 insert into public.settings (id, name_a, name_b) values (1, null, null) on conflict do nothing;
+alter table public.settings add column if not exists promptpay text;  -- your PromptPay number (for the QR)
 
 -- 3) Row Level Security: only members can read/write -------------------
 alter table public.expenses    enable row level security;

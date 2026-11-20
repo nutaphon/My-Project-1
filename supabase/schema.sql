@@ -74,6 +74,11 @@ drop policy if exists "members all" on public.settings;
 create policy "members all" on public.settings
   for all to authenticated using (public.is_member()) with check (public.is_member());
 
+-- 3b) Table privileges (new Supabase projects don't expose new tables automatically)
+grant usage on schema public to authenticated;
+grant select, insert, update, delete on public.expenses, public.settlements, public.settings to authenticated;
+grant execute on function public.is_member() to authenticated;
+
 -- 4) Private storage bucket for slips -------------------------------
 insert into storage.buckets (id, name, public)
 values ('slips', 'slips', false)

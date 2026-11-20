@@ -837,13 +837,28 @@ async function fillAlertsSetup() {
   const perm = 'Notification' in window ? Notification.permission : 'unsupported';
   box.innerHTML = `
     <h3>💰 ${t('alertsTitle')}</h3>
-    <p class="small">${t('alertsIntro', { name: nameOf('b') })}</p>
+    <p class="small">${t('alertsIntro2', { name: nameOf('b') })}</p>
     <label class="switch-row"><input type="checkbox" id="auto-settle" ${w.auto_settle ? 'checked' : ''}> ${esc(t('autoSettle', { name: nameOf('b') }))}</label>
     <label class="field"><span>${t('senderFilter')}</span><input type="text" id="sender-filter" value="${esc(w.sender_filter || '')}" placeholder="${t('senderFilterPh')}"></label>
     <button class="btn btn-ghost sm" data-action="save-webhook">${t('save')}</button>
     ${perm !== 'unsupported' && perm !== 'granted' ? `<button class="btn btn-ghost sm" data-action="notif-perm">🔔 ${t('allowNotif')}</button>` : ''}
+    <details class="more" open>
+      <summary>🍎 ${t('iosTitle')}</summary>
+      <p class="warn small">${t('iosNeedSms')}</p>
+      <ol class="steps small">
+        <li>${t('ios1')}</li>
+        <li>${t('ios2')}</li>
+        <li>${t('ios3')}</li>
+        <li>${t('ios4')}</li>
+      </ol>
+      ${copyRow('URL', state.store.rpcUrl)}
+      ${copyRow('Header: apikey', cfg.supabaseAnonKey)}
+      ${copyRow('Header: Content-Type', 'application/json')}
+      ${copyRow('JSON: token', w.token)}
+      <p class="small muted">${t('macro4')}</p>
+    </details>
     <details class="more">
-      <summary>📲 ${t('macroTitle')}</summary>
+      <summary>🤖 ${t('macroTitle')}</summary>
       <ol class="steps small">
         <li>${t('macro1')}</li>
         <li>${t('macro2')}</li>

@@ -3,16 +3,17 @@
 --  Run once in Supabase → SQL Editor → New query → paste → Run
 -- ════════════════════════════════════════════════════════════════
 
--- 1) Who is allowed to use the app (only you two) --------------------
+-- 1) Who is allowed to log in (only you) ----------------------------
+--    (Your partner is still "Person B" in the app for splitting — they just don't log in.
+--     Want them to log in later? add one more line with their email and re-run.)
 create table if not exists public.members (
   email text primary key
 );
 alter table public.members enable row level security;  -- no policies = not readable from the browser
 
--- 👇 CHANGE THESE to your two login emails, then run this file
+-- 👇 CHANGE THIS to your login email, then run this file
 insert into public.members (email) values
-  ('you@example.com'),
-  ('partner@example.com')
+  ('you@example.com')
 on conflict do nothing;
 
 create or replace function public.is_member()

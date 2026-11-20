@@ -27,7 +27,7 @@ GitHub Pages (static: HTML/CSS/JS — ฟรี)
         │
         ▼
 Supabase (ฟรี tier)
-  ├─ Auth      → login ด้วยอีเมล/รหัสผ่าน (เฉพาะ 2 คน)
+  ├─ Auth      → login ด้วยอีเมล/รหัสผ่าน (เฉพาะเจ้าของ)
   ├─ Postgres  → expenses, settlements, settings (+ Row Level Security)
   ├─ Storage   → bucket "slips" แบบ private
   └─ Realtime  → แฟนเพิ่มรายการ อีกเครื่องเห็นทันที
@@ -37,7 +37,10 @@ Supabase (ฟรี tier)
 
 **สองโหมด**
 - **Local mode** (ค่าเริ่มต้น เมื่อ `config.js` ว่าง): เก็บข้อมูลในเบราว์เซอร์เครื่องเดียว — ไว้ลองเล่นได้ทันที
-- **Cloud mode** (ใส่ค่า Supabase ใน `config.js`): ออนไลน์ ซิงก์ 2 เครื่อง อัปโหลดสลิปขึ้น cloud
+- **Cloud mode** (ใส่ค่า Supabase ใน `config.js`): ออนไลน์ ใช้ได้ทุกเครื่องที่ล็อกอิน อัปโหลดสลิปขึ้น cloud
+
+> **ใช้คนเดียว:** มีแค่เราที่ล็อกอิน แฟนเป็น "คน B" ไว้คำนวณการหารเท่านั้น ไม่ต้องมีบัญชี
+> (ถ้าวันหลังอยากให้แฟนล็อกอินด้วย เพิ่มอีเมลแฟนในตาราง `members` แล้วสร้าง user เพิ่ม)
 
 ---
 
@@ -45,11 +48,11 @@ Supabase (ฟรี tier)
 
 ### 1. สร้าง Supabase project
 1. สมัครที่ <https://supabase.com> → **New project** (เลือก region Singapore จะเร็วสุดสำหรับไทย)
-2. เปิด `supabase/schema.sql` ในโปรเจกต์นี้ → **แก้อีเมลสองบรรทัด** ให้เป็นอีเมลของเราและแฟน
+2. เปิด `supabase/schema.sql` ในโปรเจกต์นี้ → **แก้อีเมล** `you@example.com` ให้เป็นอีเมลของเรา
 3. ใน Supabase ไปที่ **SQL Editor → New query** → วางทั้งไฟล์ → **Run**
 
-### 2. สร้างบัญชีให้ 2 คน
-1. **Authentication → Users → Add user → Create new user** ใส่อีเมล+รหัสผ่าน (ติ๊ก *Auto Confirm User*) ทำ 2 ครั้ง
+### 2. สร้างบัญชีของเรา
+1. **Authentication → Users → Add user → Create new user** ใส่อีเมล (ตรงกับข้อ 1) + รหัสผ่าน (ติ๊ก *Auto Confirm User*)
 2. (แนะนำ) **Authentication → Sign In / Providers** → ปิด *Allow new users to sign up* — กันคนอื่นสมัคร
    *ถึงไม่ปิด คนนอกก็อ่าน/เขียนข้อมูลไม่ได้อยู่แล้ว เพราะ RLS อนุญาตเฉพาะอีเมลในตาราง `members`*
 

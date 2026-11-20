@@ -116,7 +116,7 @@ function balanceCard(withButton = true) {
 }
 
 function quickActions() {
-  return `<section class="quick">${KINDS.map(([k, e]) => `
+  return `<section class="quick two">${KINDS.slice(0, 2).map(([k, e]) => `
     <button class="quick-btn quick-${k}" data-action="new" data-kind="${k}">
       <span class="quick-ic">${e}</span><span class="quick-title">${t('kind_' + k)}</span>
       <span class="quick-hint">${t('kindHint_' + k)}</span>
@@ -196,119 +196,163 @@ function drawTrend() {
   });
 }
 
-// ---------- editor: a batch of entries (many 7-11 receipts + eating out + rides), saved together ----------
+// ---------- editor: one page, many "cards" (ใบที่ 1, 2, …). Each card = one day and can hold
+//            a 7-11 receipt + eating-out items + rides. Everything is saved together. ----------
 let keySeq = 0;
-function newSection(kind) {
+const nk = () => 'k' + (++keySeq);
+const PART_ORDER = ['store', 'food', 'travel'];
+
+function newPart(kind) {
   return {
-    key: 's' + (++keySeq), kind, id: null, date: todayStr(), title: kind === 'store' ? '7-Eleven' : '', note: '', payer: 'a',
+    key: nk(), kind, id: null, created_at: null, title: kind === 'store' ? '7-Eleven' : '',
     items: kind === 'travel' ? [{ name: t('rideThere'), price: '', owner: 'a' }]
       : kind === 'food' ? [{ name: '', price: '', owner: 'b' }] : [],
     slip_path: null, slipFile: null, slipPreview: null, _slipUrl: null, removeOldSlip: false,
     ocr: null, ocrTotal: null, showImg: false,
   };
 }
-function sectionFrom(e) {
+function newCard(kinds = []) {
+  return { key: nk(), date: todayStr(), note: '', payer: 'a', parts: kinds.map(newPart) };
+}
+function addPart(card, kind) {
+  let p = card.parts.find((x) => x.kind === kind);
+  if (p) return p;
+  p = newPart(kind);
+  card.parts.push(p);
+  card.parts.sort((a, b) => PART_ORDER.indexOf(a.kind) - PART_ORDER.indexOf(b.kind));
+  return p;
+}
+function cardFrom(e) {
   const kind = kindOf(e);
   let items = (e.items && e.items.length) ? e.items.map((i) => ({ ...i, price: String(i.price) })) : [];
   if (!items.length) { // older 50/50 entries → show as two halves
     const s = shares(e);
     items = [{ name: e.title, price: String(s.a), owner: 'a' }, { name: e.title, price: String(s.b), owner: 'b' }];
   }
-  return { ...newSection(kind), ...e, kind, items, note: e.note || '', slipFile: null, slipPreview: null, removeOldSlip: false };
+  const part = { ...newPart(kind), id: e.id, created_at: e.created_at, title: e.title, items, slip_path: e.slip_path };
+  return { key: nk(), date: e.date, note: e.note || '', payer: e.payer, parts: [part] };
 }
-const B = () => state.batch;
-const secByKey = (k) => B()?.sections.find((s) => s.key === k);
-const ofKind = (k) => B().sections.filter((s) => s.kind === k);
-const validItems = (s) => s.items.filter((i) => Number(i.price));
-const secShares = (s) => shares({ split: 'items', items: validItems(s).map((i) => ({ ...i, price: Number(i.price) })) });
 
+const B = () => state.batch;
+const findCard = (k) => B()?.cards.find((c) => c.key === k);
+const validItems = (p) => p.items.filter((i) => Number(i.price));
+const partShares = (p) => shares({ split: 'items', items: validItems(p).map((i) => ({ ...i, price: Number(i.price) })) });
+function cardShares(c) {
+  let a = 0, b = 0;
+  for (const p of c.parts) { const s = partShares(p); a += s.a; b += s.b; }
+  return { a: round2(a), b: round2(b) };
+}
+const ocrBusyPart = (p) => p.ocr && ['queued', 'loading', 'reading'].includes(p.ocr.status);
+
+/** Start (or continue) a batch. kind = 'store' → pick receipts; 'food' → new eating-out card. */
 function openEditor(kind) {
   closeModal();
-  state.batch = { tab: kind, sections: kind === 'store' ? [] : [newSection(kind)], editing: false };
-  state.view = 'add'; render(); window.scrollTo({ top: 0 });
-  if (kind === 'store') $('#slip-input')?.click();
+  if (state.view !== 'add' || !B()) state.batch = { cards: [], editing: false };
+  state.view = 'add';
+  if (kind === 'food') {
+    const c = newCard(['food']); B().cards.push(c);
+    render(); scrollToCard(c);
+  } else {
+    render();
+    pickReceipts(null);
+  }
 }
 function editExpense(e) {
-  const s = sectionFrom(e);
-  state.batch = { tab: s.kind, sections: [s], editing: true };
+  const c = cardFrom(e);
+  state.batch = { cards: [c], editing: true };
   state.view = 'add'; render(); window.scrollTo({ top: 0 });
-  if (e.slip_path) state.store.slipUrl(e.slip_path).then((u) => { s._slipUrl = u; refreshSection(s); }).catch(() => {});
+  const p = c.parts[0];
+  if (p.slip_path) state.store.slipUrl(p.slip_path).then((u) => { p._slipUrl = u; refreshCard(c); }).catch(() => {});
 }
+
+let receiptTarget = null; // card that gets the next picked receipt (null = new cards)
+function pickReceipts(card) {
+  receiptTarget = card;
+  const inp = $('#slip-input');
+  inp.multiple = !card;
+  inp.click();
+}
+function scrollToCard(c) { document.getElementById('card-' + c.key)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
 
 function viewEditor(v) {
-  const b = B() || (state.batch = { tab: 'store', sections: [], editing: false });
-  const k = b.tab;
-  const mine = ofKind(k);
-  const others = b.sections.filter((s) => s.kind !== k);
+  const b = B() || (state.batch = { cards: [], editing: false });
   v.innerHTML = `
     <div class="editor">
-      <div class="kind-tabs sticky-tabs">${KINDS.map(([kk, e]) => {
-        const n = ofKind(kk).length;
-        return `<button type="button" class="kind-tab ${kk === k ? 'on' : ''}" data-action="tab" data-kind="${kk}">${e} ${t('kindShort_' + kk)}${n ? ` <span class="badge">${n}</span>` : ''}</button>`;
-      }).join('')}</div>
-      ${k === 'store' && !mine.length ? `
+      <div class="livebar" id="livebar"></div>
+      ${!b.cards.length ? `
         <div class="card form">
-          <button type="button" class="upload big" data-action="pick-slips">${t('uploadReceipts')}</button>
+          <button type="button" class="upload big" data-action="pick-receipts">${t('uploadReceipts')}</button>
           <p class="hint">💡 ${t('uploadHint')}</p>
-          <button type="button" class="link center" data-action="add-section" data-kind="store">${t('orTypeManually')}</button>
+          <button type="button" class="link center" data-action="new-card" data-kind="food">${t('orStartFood')}</button>
         </div>` : ''}
-      ${mine.map((s, i) => sectionCard(s, i, mine.length)).join('')}
-      ${mine.length && !b.editing ? `<button type="button" class="btn btn-ghost block add-more" data-action="${k === 'store' ? 'pick-slips' : 'add-section'}" data-kind="${k}">${t('addMore_' + k)}</button>` : ''}
-      ${others.length ? `<div class="others">
-        <div class="others-title">${t('alsoInBatch')}</div>
-        ${others.map((s) => {
-          const sh = secShares(s);
-          return `<button type="button" class="other-row" data-action="tab" data-kind="${s.kind}" data-scroll="${s.key}">
-            <span class="row-ic">${kindEmoji(s.kind)}</span>
-            <span class="row-main"><span class="row-title">${esc(t('fromKind', { kind: t('kindShort_' + s.kind) }))} · ${esc(s.title || t('kindShort_' + s.kind))}</span>
-              <span class="row-sub">${shortDate(s.date)} · ${validItems(s).length} ${t('itemsUnit')}${s.ocr && s.ocr.status !== 'done' && s.ocr.status !== 'error' ? ' · ⏳' : ''}</span></span>
-            <span class="row-amt"><strong>${money(sh.b)}</strong><span class="row-sub">${esc(nameOf('b'))}</span></span>
-          </button>`;
-        }).join('')}
-      </div>` : ''}
+      <div id="cards">${b.cards.map((c, i) => cardHtml(c, i)).join('')}</div>
+      ${b.cards.length && !b.editing ? `
+        <div class="add-more-row">
+          <button type="button" class="btn btn-ghost add-more" data-action="pick-receipts">${t('moreReceipts')}</button>
+          <button type="button" class="btn btn-ghost add-more" data-action="new-card" data-kind="food">${t('moreFoodCard')}</button>
+        </div>` : ''}
       <input type="file" id="slip-input" accept="image/*" multiple hidden>
-      <input type="file" id="photo-input" accept="image/*" hidden>
     </div>
     <div class="savebar" id="savebar"></div>`;
-  refreshBar();
+  refreshBars();
 }
 
-const shortDate = (d) => new Date(d + 'T00:00').toLocaleDateString(locale(), { day: 'numeric', month: 'short' });
-
-function sectionCard(s, i, n) {
-  const k = s.kind;
-  const busy = s.ocr && (s.ocr.status === 'queued' || s.ocr.status === 'loading' || s.ocr.status === 'reading');
-  return `<section class="card form section owner-scope" data-key="${s.key}" id="sec-${s.key}">
-    <div class="section-head">
-      <strong>${kindEmoji(k)} ${k === 'store' ? t('receiptNo', { n: i + 1 }) : esc(t('kindShort_' + k))}${n > 1 && k !== 'store' ? ` #${i + 1}` : ''}</strong>
-      ${B().editing ? '' : `<button type="button" class="icon-btn danger" data-action="del-section" aria-label="${t('delete')}">✕</button>`}
+function cardHtml(c, i) {
+  const s = cardShares(c);
+  const has = (k) => c.parts.some((p) => p.kind === k);
+  const editing = B().editing;
+  return `<section class="card daycard" data-card="${c.key}" id="card-${c.key}">
+    <div class="day-top">
+      <div class="day-title"><strong>${t('cardNo', { n: i + 1 })}</strong>
+        <span class="day-sum"><span class="dot dot-b"></span>${money(s.b)} <span class="dot dot-a"></span>${money(s.a)}</span></div>
+      ${editing ? '' : `<button type="button" class="icon-btn danger" data-action="del-card" aria-label="${t('delete')}">✕</button>`}
     </div>
-    ${k === 'store' ? receiptBlock(s) : ''}
-    ${busy ? '' : `
-      <div class="row2">
-        <label class="field"><span>${t('date')}</span><input type="date" data-f="date" value="${esc(s.date)}" required></label>
-        <label class="field"><span>${t('place')}</span><input type="text" data-f="title" value="${esc(s.title)}" placeholder="${t('placePh_' + k)}" list="place-${k}"></label>
+    <label class="field day-date"><span>${t('date')}</span><input type="date" data-cf="date" value="${esc(c.date)}" required></label>
+    ${c.parts.map((p) => partHtml(c, p)).join('')}
+    ${editing ? '' : `<div class="part-add">
+      ${has('store') ? '' : `<button type="button" class="chip" data-action="add-receipt">${t('addReceiptPart')}</button>`}
+      ${has('food') ? '' : `<button type="button" class="chip" data-action="add-part" data-kind="food">${t('addFoodPart')}</button>`}
+      ${has('travel') ? '' : `<button type="button" class="chip" data-action="add-part" data-kind="travel">${t('addRidePart')}</button>`}
+    </div>`}
+    <details class="more" ${c.note || c.payer === 'b' ? 'open' : ''}>
+      <summary>${t('moreOptions')}</summary>
+      <label class="field"><span>${t('note')}</span><input type="text" data-cf="note" value="${esc(c.note || '')}" placeholder="${t('notePh')}"></label>
+      <div class="field"><span>${t('whoPaid')}</span>
+        <div class="chips">${['a', 'b'].map((p) => `<button type="button" class="chip sm ${c.payer === p ? 'on' : ''}" data-action="payer" data-p="${p}">${esc(nameOf(p))}</button>`).join('')}</div>
       </div>
-      <datalist id="place-${k}">${[...new Set(state.expenses.filter((e) => kindOf(e) === k).map((e) => e.title).filter(Boolean))].slice(0, 30).map((p) => `<option value="${esc(p)}">`).join('')}</datalist>
-      <div class="field">
-        <span>${t('items')} <span class="hint-inline">· ${t('tapToToggle')}</span></span>
-        <div class="items">${s.items.map(itemRow).join('')}</div>
-        <div class="btn-row">
-          ${k === 'travel' ? `<button type="button" class="btn btn-ghost sm" data-action="add-item" data-name="${esc(t('rideThere'))}">${t('quickRide')} ${esc(t('rideThere'))}</button>
-            <button type="button" class="btn btn-ghost sm" data-action="add-item" data-name="${esc(t('rideBack'))}">${t('quickRide')} ${esc(t('rideBack'))}</button>` : ''}
-          <button type="button" class="btn btn-ghost sm" data-action="add-item">${t('addItem')}</button>
-        </div>
-      </div>
-      ${k !== 'store' ? `<div class="field">${photoBlock(s)}</div>` : ''}
-      <details class="more" ${s.note || s.payer === 'b' ? 'open' : ''}>
-        <summary>${t('moreOptions')}</summary>
-        <label class="field"><span>${t('note')}</span><input type="text" data-f="note" value="${esc(s.note || '')}" placeholder="${t('notePh')}"></label>
-        <div class="field"><span>${t('whoPaid')}</span>
-          <div class="chips">${['a', 'b'].map((p) => `<button type="button" class="chip sm ${s.payer === p ? 'on' : ''}" data-action="payer" data-p="${p}">${esc(nameOf(p))}</button>`).join('')}</div>
-        </div>
-      </details>
-      <div class="summary" data-summary>${summaryHtml(s)}</div>`}
+    </details>
   </section>`;
+}
+
+function partHtml(c, p) {
+  const k = p.kind;
+  const s = partShares(p);
+  const busy = ocrBusyPart(p);
+  const tot = round2(s.a + s.b);
+  const warn = k === 'store' && p.ocrTotal && Math.abs(p.ocrTotal - tot) > 0.01
+    ? `<div class="ocr-err small">⚠️ ${t('totalMismatch', { r: money(p.ocrTotal), s: money(tot) })}</div>` : '';
+  return `<div class="part part-${k}" data-part="${p.key}">
+    <div class="part-head">
+      <strong>${t('part_' + k)}</strong>
+      <span class="part-sum" data-psum>${partSumHtml(p)}</span>
+      ${B().editing ? '' : `<button type="button" class="icon-btn danger sm" data-action="del-part" aria-label="${t('delete')}">✕</button>`}
+    </div>
+    ${k === 'store' ? receiptBlock(p) : ''}
+    ${busy ? '' : `
+      ${k !== 'travel' ? `<input type="text" class="part-title" data-pf="title" value="${esc(p.title)}" placeholder="${t('placePh_' + k)}" list="place-${k}">
+        <datalist id="place-${k}">${[...new Set(state.expenses.filter((e) => kindOf(e) === k).map((e) => e.title).filter(Boolean))].slice(0, 30).map((x) => `<option value="${esc(x)}">`).join('')}</datalist>` : ''}
+      <div class="items">${p.items.map(itemRow).join('')}</div>
+      <div class="btn-row">
+        ${k === 'travel' ? `<button type="button" class="btn btn-ghost sm" data-action="add-item" data-name="${esc(t('rideThere'))}">${t('quickRide')} ${esc(t('rideThere'))}</button>
+          <button type="button" class="btn btn-ghost sm" data-action="add-item" data-name="${esc(t('rideBack'))}">${t('quickRide')} ${esc(t('rideBack'))}</button>` : ''}
+        <button type="button" class="btn btn-ghost sm" data-action="add-item">${k === 'travel' ? t('addRideItem') : t('addItem')}</button>
+      </div>
+      <div data-pwarn>${warn}</div>`}
+  </div>`;
+}
+function partSumHtml(p) {
+  const s = partShares(p);
+  return `<span class="dot dot-b"></span>${money(s.b)} · <span class="dot dot-a"></span>${money(s.a)}`;
 }
 
 function itemRow(it, i) {
@@ -320,11 +364,11 @@ function itemRow(it, i) {
   </div>`;
 }
 
-function slipSrc(s) { return s.slipPreview || (!s.removeOldSlip && s._slipUrl) || null; }
-function hasSlip(s) { return !!(s.slipPreview || (s.slip_path && !s.removeOldSlip)); }
+function slipSrc(p) { return p.slipPreview || (!p.removeOldSlip && p._slipUrl) || null; }
+function hasSlip(p) { return !!(p.slipPreview || (p.slip_path && !p.removeOldSlip)); }
 
-function ocrStatusHtml(s) {
-  const o = s.ocr;
+function ocrStatusHtml(p) {
+  const o = p.ocr;
   if (!o) return '';
   if (o.status === 'queued') return `<div class="ocr-status"><div class="spinner"></div>${t('queued')}</div>`;
   if (o.status === 'loading') return `<div class="ocr-status"><div class="spinner"></div>${t('loadingOcr')}</div>`;
@@ -334,87 +378,87 @@ function ocrStatusHtml(s) {
   return '';
 }
 
-function receiptBlock(s) {
-  const src = slipSrc(s);
+function receiptBlock(p) {
+  const src = slipSrc(p);
+  const busy = ocrBusyPart(p);
   return `<div class="receipt-box">
-    ${hasSlip(s) ? `<div class="receipt-bar">
-        ${src ? `<button type="button" class="btn btn-ghost sm" data-action="toggle-img">🧾 ${s.showImg ? t('hideReceipt') : t('showReceipt')}</button>` : ''}
-        ${s.slipFile && s.ocr?.status !== 'reading' && s.ocr?.status !== 'loading' ? `<button type="button" class="btn btn-ghost sm" data-action="reread">${t('rereadReceipt')}</button>` : ''}
-      </div>` : ''}
-    ${(s.showImg || (src && s.ocr && s.ocr.status !== 'done' && s.ocr.status !== 'error')) && src ? `<img class="receipt-img ${s.showImg ? '' : 'thumb'}" src="${esc(src)}" alt="receipt">` : ''}
-    <div id="ocr-${s.key}">${ocrStatusHtml(s)}</div>
+    ${hasSlip(p) ? `<div class="receipt-bar">
+        ${src ? `<button type="button" class="btn btn-ghost sm" data-action="toggle-img">🧾 ${p.showImg ? t('hideReceipt') : t('showReceipt')}</button>` : ''}
+        ${p.slipFile && !busy ? `<button type="button" class="btn btn-ghost sm" data-action="reread">${t('rereadReceipt')}</button>` : ''}
+      </div>` : `<button type="button" class="upload" data-action="add-receipt">${t('uploadReceipt')}</button>`}
+    ${src && (p.showImg || busy) ? `<img class="receipt-img ${p.showImg ? '' : 'thumb'}" src="${esc(src)}" alt="receipt">` : ''}
+    <div id="ocr-${p.key}">${ocrStatusHtml(p)}</div>
   </div>`;
 }
 
-function photoBlock(s) {
-  if (!hasSlip(s)) return `<button type="button" class="upload" data-action="pick-photo">${t('attachPhoto')}</button>`;
-  const src = slipSrc(s);
-  return `<div class="slip-prev">${src ? `<img src="${esc(src)}" alt="photo">` : '<div class="muted">🧾</div>'}
-    <div class="slip-actions"><button type="button" class="btn btn-ghost sm" data-action="pick-photo">${t('changePhoto')}</button>
-    <button type="button" class="btn btn-ghost sm danger" data-action="remove-photo">${t('removePhoto')}</button></div></div>`;
-}
-
-function summaryHtml(s) {
-  const sh = secShares(s);
-  const tot = round2(sh.a + sh.b);
-  const debtor = other(s.payer);
-  const owe = sh[debtor];
-  const warn = s.ocrTotal && Math.abs(s.ocrTotal - tot) > 0.01
-    ? `<div class="ocr-err small">⚠️ ${t('totalMismatch', { r: money(s.ocrTotal), s: money(tot) })}</div>` : '';
-  return `<div class="sum-grid">
-      <div><span><span class="dot dot-b"></span>${esc(t('sumPartner', { name: nameOf('b') }))}</span><strong>${money(sh.b)}</strong></div>
-      <div><span><span class="dot dot-a"></span>${esc(t('sumMine', { name: nameOf('a') }))}</span><strong>${money(sh.a)}</strong></div>
-      <div><span>${t('total')}</span><strong>${money(tot)}</strong></div>
-    </div>
-    ${owe > 0 ? `<div class="sum-owe">${esc(t('thisOwes', { from: nameOf(debtor), to: nameOf(s.payer), amt: money(owe) }))}</div>` : ''}
-    ${warn}`;
-}
-
-function refreshSection(s) {
-  const el = document.getElementById('sec-' + s.key);
+function refreshCard(c) {
+  const el = document.getElementById('card-' + c.key);
   if (!el) return;
-  const list = ofKind(s.kind);
-  el.outerHTML = sectionCard(s, list.indexOf(s), list.length);
-  refreshBar();
+  el.outerHTML = cardHtml(c, B().cards.indexOf(c));
+  refreshBars();
 }
-function refreshSummary(s) {
-  const el = document.querySelector(`#sec-${s.key} [data-summary]`);
-  if (el) el.innerHTML = summaryHtml(s);
-  refreshBar();
+/** Light refresh while typing: card / part totals + bars, without re-rendering inputs. */
+function refreshTotals(c, p) {
+  const cardEl = document.getElementById('card-' + c.key);
+  if (cardEl) {
+    const s = cardShares(c);
+    cardEl.querySelector('.day-sum').innerHTML = `<span class="dot dot-b"></span>${money(s.b)} <span class="dot dot-a"></span>${money(s.a)}`;
+    if (p) {
+      const pe = cardEl.querySelector(`[data-part="${p.key}"]`);
+      pe?.querySelector('[data-psum]') && (pe.querySelector('[data-psum]').innerHTML = partSumHtml(p));
+      if (p.kind === 'store' && pe?.querySelector('[data-pwarn]')) {
+        const sh = partShares(p), tot = round2(sh.a + sh.b);
+        pe.querySelector('[data-pwarn]').innerHTML = p.ocrTotal && Math.abs(p.ocrTotal - tot) > 0.01
+          ? `<div class="ocr-err small">⚠️ ${t('totalMismatch', { r: money(p.ocrTotal), s: money(tot) })}</div>` : '';
+      }
+    }
+  }
+  refreshBars();
 }
-function refreshBar() {
-  const bar = $('#savebar'); if (!bar || !B()) return;
-  const secs = B().sections.filter((s) => validItems(s).length);
-  let owe = 0;
-  for (const s of secs) { const sh = secShares(s); owe += s.payer === 'a' ? sh.b : -sh.a; }
-  const busy = B().sections.some((s) => s.ocr && ['queued', 'loading', 'reading'].includes(s.ocr.status));
-  bar.innerHTML = `
-    <div class="savebar-info"><span>${t('batchCount', { n: secs.length })}</span>
-      <strong>${owe >= 0 ? `${esc(nameOf('b'))} → ${esc(nameOf('a'))}` : `${esc(nameOf('a'))} → ${esc(nameOf('b'))}`} ${money(Math.abs(owe))}</strong></div>
+
+/** Sticky running totals (all cards) + save bar. */
+function refreshBars() {
+  const b = B(); if (!b) return;
+  let a = 0, bb = 0, owe = 0, n = 0;
+  for (const c of b.cards) {
+    const s = cardShares(c);
+    if (s.a + s.b) n++;
+    a += s.a; bb += s.b;
+    owe += c.payer === 'a' ? s.b : -s.a;
+  }
+  const busy = b.cards.some((c) => c.parts.some(ocrBusyPart));
+  const live = $('#livebar');
+  if (live) live.innerHTML = `
+    <div class="live-label">${t('liveTotal', { n: b.cards.length })}</div>
+    <div class="live-grid">
+      <div class="live-b"><span><span class="dot dot-b"></span>${esc(nameOf('b'))} (B)</span><strong>${money(bb)}</strong></div>
+      <div class="live-a"><span><span class="dot dot-a"></span>${esc(nameOf('a'))} (A)</span><strong>${money(a)}</strong></div>
+      <div><span>${t('total')}</span><strong>${money(a + bb)}</strong></div>
+    </div>
+    ${Math.abs(owe) > 0.004 ? `<div class="live-owe">${esc(owe > 0 ? t('owes', { from: nameOf('b'), to: nameOf('a') }) : t('owes', { from: nameOf('a'), to: nameOf('b') }))} <strong>${money(Math.abs(owe))}</strong></div>` : ''}`;
+  const bar = $('#savebar');
+  if (bar) bar.innerHTML = `
     <button type="button" class="btn btn-ghost" data-action="cancel">${t('cancel')}</button>
-    <button type="button" class="btn btn-primary" data-action="save-all" ${busy || !secs.length ? 'disabled' : ''}>${busy ? '⏳' : ''} ${B().editing ? t('save') : t('saveAll', { n: secs.length })}</button>`;
-  // keep tab badges in sync
-  document.querySelectorAll('.kind-tab').forEach((el) => {
-    const n = ofKind(el.dataset.kind).length;
-    let badge = el.querySelector('.badge');
-    if (n && !badge) { badge = document.createElement('span'); badge.className = 'badge'; el.append(' ', badge); }
-    if (badge) { if (n) badge.textContent = n; else badge.remove(); }
-  });
+    <button type="button" class="btn btn-primary grow" data-action="save-all" ${busy || !n ? 'disabled' : ''}>${busy ? '⏳ ' + t('waitReading') : b.editing ? t('save') : t('saveAll', { n })}</button>`;
 }
 
 // ----- OCR queue (one receipt at a time; the others wait) -----
 let ocrBusy = false;
 function addReceipts(files) {
   const b = B();
-  const added = [...files].map((f) => {
-    const s = newSection('store');
-    s.slipFile = f; s.slipPreview = URL.createObjectURL(f); s.ocr = { status: 'queued' };
-    b.sections.push(s);
-    return s;
+  let first = null;
+  files.forEach((f, idx) => {
+    let card;
+    if (idx === 0 && receiptTarget) card = receiptTarget;
+    else { card = newCard(); b.cards.push(card); }
+    const p = addPart(card, 'store');
+    if (p.slipPreview) URL.revokeObjectURL(p.slipPreview);
+    Object.assign(p, { slipFile: f, slipPreview: URL.createObjectURL(f), removeOldSlip: false, ocr: { status: 'queued' }, items: [] });
+    first ||= card;
   });
-  b.tab = 'store';
+  receiptTarget = null;
   viewEditor($('#view'));
-  document.getElementById('sec-' + added[0].key)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  if (first) scrollToCard(first);
   processQueue();
 }
 async function processQueue() {
@@ -422,9 +466,10 @@ async function processQueue() {
   ocrBusy = true;
   try {
     for (;;) {
-      const s = B()?.sections.find((x) => x.ocr?.status === 'queued');
-      if (!s) break;
-      await ocrSection(s);
+      let job = null;
+      for (const c of B()?.cards || []) { const p = c.parts.find((x) => x.ocr?.status === 'queued'); if (p) { job = [c, p]; break; } }
+      if (!job) break;
+      await ocrPart(...job);
     }
   } finally { ocrBusy = false; }
 }
@@ -439,76 +484,70 @@ function knownItemNames() {
   }
   return out;
 }
-async function ocrSection(s) {
+async function ocrPart(c, p) {
   const batch = B();
   const setStatus = (o) => {
-    s.ocr = o;
-    const el = document.getElementById('ocr-' + s.key);
-    if (el) el.innerHTML = ocrStatusHtml(s); else if (B() === batch && batch.tab === 'store') refreshSection(s);
+    p.ocr = o;
+    const el = document.getElementById('ocr-' + p.key);
+    if (el) el.innerHTML = ocrStatusHtml(p);
   };
   setStatus({ status: 'loading' });
   try {
-    const res = await readReceipt(s.slipFile, (m) => {
+    const res = await readReceipt(p.slipFile, (m) => {
       if (m.status === 'recognizing text') {
-        const p = Math.round((m.progress || 0) * 100);
-        if (s.ocr.status !== 'reading' || p - s.ocr.p >= 5) setStatus({ status: 'reading', p });
+        const pct = Math.round((m.progress || 0) * 100);
+        if (p.ocr.status !== 'reading' || pct - p.ocr.p >= 5) setStatus({ status: 'reading', p: pct });
       }
     }, knownItemNames());
-    if (res.date) s.date = res.date;
-    s.ocrTotal = res.total || null;
-    s.items = res.items.map((i) => ({ name: i.name, price: String(i.price), owner: i.owner, ocr: i.rawName }));
+    if (res.date) c.date = res.date;
+    p.ocrTotal = res.total || null;
+    p.items = res.items.map((i) => ({ name: i.name, price: String(i.price), owner: i.owner, ocr: i.rawName }));
     const marked = res.items.filter((i) => i.marked).length;
-    if (!s.items.length) {
-      s.items = [{ name: '', price: '', owner: 'b' }];
-      s.ocr = { status: 'error', msg: t('readNone') };
+    if (!p.items.length) {
+      p.items = [{ name: '', price: '', owner: 'b' }];
+      p.ocr = { status: 'error', msg: t('readNone') };
     } else {
-      s.ocr = { status: 'done', msg: t('readDone', { n: s.items.length }) + (marked ? `<br>✏️ ${esc(t('readMarked', { n: marked, name: nameOf('b') }))}` : '') };
+      p.ocr = { status: 'done', msg: t('readDone', { n: p.items.length }) + (marked ? `<br>✏️ ${esc(t('readMarked', { n: marked, name: nameOf('b') }))}` : '') };
     }
   } catch (e) {
-    if (!s.items.length) s.items = [{ name: '', price: '', owner: 'b' }];
-    s.ocr = { status: 'error', msg: t('error', { msg: e.message }) };
+    if (!p.items.length) p.items = [{ name: '', price: '', owner: 'b' }];
+    p.ocr = { status: 'error', msg: t('error', { msg: e.message }) };
   }
-  if (B() !== batch) return;
-  if (batch.tab === 'store') refreshSection(s); else viewEditor($('#view'));
+  if (B() === batch) refreshCard(c);
 }
 
 async function saveAll() {
   const b = B();
-  const secs = b.sections.filter((s) => validItems(s).length);
-  for (const s of secs) {
-    const items = validItems(s);
-    if (!(itemsTotal(items.map((i) => ({ price: Number(i.price) }))) > 0)) {
-      document.getElementById('sec-' + s.key)?.scrollIntoView({ behavior: 'smooth' });
-      return toast(t('errAmount'), true);
-    }
-  }
-  if (!secs.length) return toast(t('errAmount'), true);
+  const jobs = [];
+  for (const c of b.cards) for (const p of c.parts) if (validItems(p).length) jobs.push([c, p]);
+  if (!jobs.length) return toast(t('errAmount'), true);
   const btn = $('[data-action=save-all]'); btn.disabled = true;
   let done = 0;
   try {
-    for (const s of secs) {
-      btn.textContent = t('savingN', { i: done + 1, n: secs.length });
-      const items = validItems(s).map((i) => {
-        const it = { name: i.name.trim() || t('kindShort_' + s.kind), price: round2(i.price), owner: i.owner };
+    for (const [c, p] of jobs) {
+      btn.textContent = t('savingN', { i: done + 1, n: jobs.length });
+      const items = validItems(p).map((i) => {
+        const it = { name: i.name.trim() || t('kindShort_' + p.kind), price: round2(i.price), owner: i.owner };
         if (i.ocr && i.ocr !== it.name) it.ocr = i.ocr; // remember OCR text → your fix (auto-correct next time)
         return it;
       });
-      let slip_path = s.removeOldSlip ? null : s.slip_path;
-      if (s.slipFile) slip_path = await state.store.uploadSlip(s.slipFile);
-      if ((s.slipFile || s.removeOldSlip) && s.slip_path && s.slip_path !== slip_path) await state.store.removeSlip(s.slip_path);
+      let slip_path = p.removeOldSlip ? null : p.slip_path;
+      if (p.slipFile) slip_path = await state.store.uploadSlip(p.slipFile);
+      if ((p.slipFile || p.removeOldSlip) && p.slip_path && p.slip_path !== slip_path) await state.store.removeSlip(p.slip_path);
       await state.store.saveExpense({
-        id: s.id || undefined, created_at: s.created_at, date: s.date, category: s.kind,
-        title: s.title.trim() || t('kindShort_' + s.kind), payer: s.payer, split: 'items',
-        total: itemsTotal(items), items, slip_path, note: (s.note || '').trim() || null,
+        id: p.id || undefined, created_at: p.created_at, date: c.date, category: p.kind,
+        title: (p.title || '').trim() || t('kindShort_' + p.kind), payer: c.payer, split: 'items',
+        total: itemsTotal(items), items, slip_path, note: (c.note || '').trim() || null,
       });
-      b.sections = b.sections.filter((x) => x !== s); // saved → remove from batch (safe to retry the rest)
+      c.parts = c.parts.filter((x) => x !== p); // saved → drop from batch (a retry only saves the rest)
       done++;
     }
     await reload();
     toast(t('savedN', { n: done }));
-    state.month = monthOf(secs[0].date);
+    state.month = monthOf(jobs[0][0].date);
     go('dashboard');
   } catch (e) {
+    b.cards = b.cards.filter((c) => c.parts.length);
     await reload().catch(() => {});
     toast((e.message === 'localStorageFull' ? t('localWarn') : t('error', { msg: e.message })) + (done ? ` (${t('savedN', { n: done })})` : ''), true);
     viewEditor($('#view'));
@@ -577,7 +616,7 @@ async function openExpense(id) {
 function addMenu() {
   showModal(`
     <div class="modal-head"><h3>${t('addExpense')}</h3><button class="icon-btn" data-action="close-modal">✕</button></div>
-    <div class="add-menu">${KINDS.map(([k, e]) => `
+    <div class="add-menu">${KINDS.slice(0, 2).map(([k, e]) => `
       <button class="quick-btn quick-${k} wide" data-action="new" data-kind="${k}">
         <span class="quick-ic">${e}</span><span><span class="quick-title">${t('kind_' + k)}</span><span class="quick-hint">${t('kindHint_' + k)}</span></span>
       </button>`).join('')}</div>`);
@@ -692,16 +731,18 @@ function toast(msg, isErr = false) {
 }
 
 // ---------- events ----------
-let photoTarget = null;
+const unsaved = () => state.view === 'add' && B()?.cards.some((c) => c.parts.some((p) => validItems(p).length));
 
 document.addEventListener('click', async (ev) => {
   const el = ev.target.closest('[data-nav],[data-action],[data-open]');
   if (!el) { if (ev.target.id === 'modal') closeModal(); return; }
-  const secEl = el.closest('.section');
-  const s = secEl ? secByKey(secEl.dataset.key) : null;
+  const cardEl = el.closest('.daycard');
+  const c = cardEl ? findCard(cardEl.dataset.card) : null;
+  const partEl = el.closest('.part');
+  const p = c && partEl ? c.parts.find((x) => x.key === partEl.dataset.part) : null;
 
   if (el.dataset.nav) {
-    if (state.view === 'add' && B()?.sections.some((x) => validItems(x).length) && !confirm(t('confirmDiscard'))) return;
+    if (unsaved() && !confirm(t('confirmDiscard'))) return;
     closeModal(); return go(el.dataset.nav);
   }
   if (el.dataset.open) return openExpense(el.dataset.open);
@@ -710,49 +751,46 @@ document.addEventListener('click', async (ev) => {
     case 'lang': setLang(getLang() === 'th' ? 'en' : 'th'); return state.session ? (renderShell(), render()) : renderLogin();
     case 'set-lang': setLang(el.dataset.l); renderShell(); return render();
     case 'month': state.month = shiftMonth(state.month, +el.dataset.d); return render();
-    case 'add-menu':
-      if (state.view === 'add') return; // already in the editor — use the tabs
-      return addMenu();
+    case 'add-menu': return addMenu();
     case 'new': return openEditor(el.dataset.kind);
-    case 'tab': {
-      const k = el.dataset.kind, b = B();
-      b.tab = k;
-      if (k !== 'store' && !ofKind(k).length && !b.editing) b.sections.push(newSection(k));
-      viewEditor($('#view'));
-      const target = el.dataset.scroll ? document.getElementById('sec-' + el.dataset.scroll) : null;
-      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' }); else window.scrollTo({ top: 0 });
-      return;
+    case 'pick-receipts': return pickReceipts(null);
+    case 'new-card': {
+      const nc = newCard([el.dataset.kind]); B().cards.push(nc); viewEditor($('#view')); return scrollToCard(nc);
     }
-    case 'pick-slips': return $('#slip-input').click();
-    case 'add-section': {
-      const ns = newSection(el.dataset.kind); B().sections.push(ns); viewEditor($('#view'));
-      document.getElementById('sec-' + ns.key)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      return;
-    }
-    case 'del-section':
-      if (validItems(s).length && !confirm(t('confirmDelete'))) return;
-      B().sections = B().sections.filter((x) => x !== s);
-      if (s.slipPreview) URL.revokeObjectURL(s.slipPreview);
+    case 'del-card':
+      if (cardShares(c).a + cardShares(c).b && !confirm(t('confirmDelete'))) return;
+      c.parts.forEach((x) => x.slipPreview && URL.revokeObjectURL(x.slipPreview));
+      B().cards = B().cards.filter((x) => x !== c);
       return viewEditor($('#view'));
-    case 'toggle-owner': { const i = +el.closest('.item-row').dataset.i; s.items[i].owner = s.items[i].owner === 'b' ? 'a' : 'b'; return refreshSection(s); }
-    case 'payer': s.payer = el.dataset.p; return refreshSection(s);
-    case 'add-item': {
-      s.items.push({ name: el.dataset.name || '', price: '', owner: s.kind === 'travel' ? 'a' : 'b' });
-      refreshSection(s);
-      return document.querySelector(`#sec-${s.key} .item-row:last-child input[data-item=${el.dataset.name ? 'price' : 'name'}]`)?.focus();
+    case 'add-receipt':
+      addPart(c, 'store'); refreshCard(c);
+      return pickReceipts(c);
+    case 'add-part': {
+      const np = addPart(c, el.dataset.kind); refreshCard(c);
+      return document.querySelector(`[data-part="${np.key}"] input[data-item=${np.kind === 'travel' ? 'price' : 'name'}]`)?.focus();
     }
-    case 'del-item': { const i = +el.closest('.item-row').dataset.i; s.items.splice(i, 1); return refreshSection(s); }
-    case 'toggle-img': s.showImg = !s.showImg; return refreshSection(s);
-    case 'reread': s.ocr = { status: 'queued' }; refreshSection(s); return processQueue();
-    case 'pick-photo': photoTarget = s; return $('#photo-input').click();
-    case 'remove-photo': s.slipFile = null; s.slipPreview = null; s.removeOldSlip = true; return refreshSection(s);
+    case 'del-part':
+      if (validItems(p).length && !confirm(t('confirmDelete'))) return;
+      if (p.slipPreview) URL.revokeObjectURL(p.slipPreview);
+      c.parts = c.parts.filter((x) => x !== p);
+      return refreshCard(c);
+    case 'toggle-owner': { const i = +el.closest('.item-row').dataset.i; p.items[i].owner = p.items[i].owner === 'b' ? 'a' : 'b'; return refreshCard(c); }
+    case 'payer': c.payer = el.dataset.p; return refreshCard(c);
+    case 'add-item': {
+      p.items.push({ name: el.dataset.name || '', price: '', owner: p.kind === 'travel' ? 'a' : 'b' });
+      refreshCard(c);
+      return document.querySelector(`[data-part="${p.key}"] .item-row:last-child input[data-item=${el.dataset.name ? 'price' : 'name'}]`)?.focus();
+    }
+    case 'del-item': { const i = +el.closest('.item-row').dataset.i; p.items.splice(i, 1); return refreshCard(c); }
+    case 'toggle-img': p.showImg = !p.showImg; return refreshCard(c);
+    case 'reread': p.ocr = { status: 'queued' }; refreshCard(c); return processQueue();
     case 'save-all': return saveAll();
     case 'cancel':
-      if (B()?.sections.some((x) => validItems(x).length) && !confirm(t('confirmDiscard'))) return;
+      if (unsaved() && !confirm(t('confirmDiscard'))) return;
       return go('dashboard');
     case 'close-modal': return closeModal();
     case 'from':
-      el.parentElement.querySelectorAll('.chip').forEach((c) => c.classList.toggle('on', c === el));
+      el.parentElement.querySelectorAll('.chip').forEach((x) => x.classList.toggle('on', x === el));
       $('#settle-form [name=from_person]').value = el.dataset.p; return;
     case 'edit-exp': {
       const e = state.expenses.find((x) => x.id === el.dataset.id); closeModal();
@@ -784,21 +822,18 @@ document.addEventListener('input', (ev) => {
     state.search = el.value; const pos = el.selectionStart;
     viewHistory($('#view')); const q = $('.search'); q.focus(); q.setSelectionRange(pos, pos); return;
   }
-  const secEl = el.closest('.section'); if (!secEl) return;
-  const s = secByKey(secEl.dataset.key); if (!s) return;
-  if (el.dataset.f) { s[el.dataset.f] = el.value; return refreshSummary(s); }
-  if (el.dataset.item) { const i = +el.closest('.item-row').dataset.i; s.items[i][el.dataset.item] = el.value; refreshSummary(s); }
+  const cardEl = el.closest('.daycard'); if (!cardEl) return;
+  const c = findCard(cardEl.dataset.card); if (!c) return;
+  if (el.dataset.cf) { c[el.dataset.cf] = el.value; return; }
+  const partEl = el.closest('.part'); if (!partEl) return;
+  const p = c.parts.find((x) => x.key === partEl.dataset.part); if (!p) return;
+  if (el.dataset.pf) { p[el.dataset.pf] = el.value; return; }
+  if (el.dataset.item) { const i = +el.closest('.item-row').dataset.i; p.items[i][el.dataset.item] = el.value; refreshTotals(c, p); }
 });
 
 document.addEventListener('change', async (ev) => {
   const el = ev.target;
   if (el.id === 'slip-input' && el.files.length) { const files = [...el.files]; el.value = ''; return addReceipts(files); }
-  if (el.id === 'photo-input' && el.files[0] && photoTarget) {
-    const s = photoTarget; photoTarget = null;
-    if (s.slipPreview) URL.revokeObjectURL(s.slipPreview);
-    s.slipFile = el.files[0]; s.slipPreview = URL.createObjectURL(el.files[0]); s.removeOldSlip = false; el.value = '';
-    return refreshSection(s);
-  }
   if (el.id === 'import-input' && el.files[0]) {
     try { await state.store.importAll(JSON.parse(await el.files[0].text())); await reload(); toast(t('imported')); render(); }
     catch (err) { toast(t('error', { msg: err.message }), true); }

@@ -7,8 +7,8 @@ const dict = {
     // kinds
     kind_store: '7-11 receipt', kind_food: 'Eating out', kind_travel: 'Rides',
     kindShort_store: '7-11', kindShort_food: 'Eating out', kindShort_travel: 'Travel',
-    kindHint_store: 'Upload the e-receipt — I read it for you',
-    kindHint_food: 'Add what your partner ate',
+    kindHint_store: 'Upload several receipts · add meals & rides per card',
+    kindHint_food: 'Add a day\'s 7-11 receipt & rides too',
     kindHint_travel: 'Motorbike taxi, bus, etc.',
     // dashboard
     balance: 'Balance', owes: '{from} owes {to}', allSettled: 'All settled up 🎉', settleNow: 'Settle up',
@@ -39,6 +39,10 @@ const dict = {
     alsoInBatch: 'Also in this batch', fromKind: 'From {kind}', itemsUnit: 'items', receiptNo: 'Receipt {n}',
     moreOptions: 'Note / who paid', queued: 'Waiting to be read…', batchCount: '{n} entries',
     saveAll: 'Save all ({n})', savingN: 'Saving {i}/{n}…', savedN: 'Saved {n} ✓', confirmDiscard: 'Discard what you haven\'t saved?',
+    orStartFood: 'or start with eating out', moreReceipts: '📷 + 7-11 receipts', moreFoodCard: '🍜 + Eating out',
+    cardNo: 'Card {n}', addReceiptPart: '+ 🏪 7-11 receipt', addFoodPart: '+ 🍜 Eating out', addRidePart: '+ 🛵 Ride',
+    part_store: '🏪 7-11', part_food: '🍜 Eating out', part_travel: '🛵 Rides', addRideItem: '+ Ride',
+    liveTotal: 'Running total · {n} cards', waitReading: 'Reading…',
     // history
     search: 'Search…', noResults: 'Nothing found for this month.', partnerPart: '{name} {amt}',
     // settle
@@ -61,8 +65,8 @@ const dict = {
     nav_dashboard: 'หน้าหลัก', nav_add: 'เพิ่ม', nav_history: 'ประวัติ', nav_settle: 'เคลียร์เงิน', nav_settings: 'ตั้งค่า',
     kind_store: 'ใบเสร็จ 7-11', kind_food: 'กินข้างนอก', kind_travel: 'ค่าวิน',
     kindShort_store: '7-11', kindShort_food: 'กินข้างนอก', kindShort_travel: 'ค่าเดินทาง',
-    kindHint_store: 'อัปโหลด E-receipt ระบบอ่านให้เอง',
-    kindHint_food: 'ใส่ว่าแฟนกินอะไร กี่บาท',
+    kindHint_store: 'อัปโหลดได้หลายใบ · เพิ่มกินข้างนอก/ค่าวินในแต่ละใบได้',
+    kindHint_food: 'เพิ่มใบเสร็จ 7-11 / ค่าวิน ของวันนั้นได้',
     kindHint_travel: 'วินมอไซค์ รถเมล์ ฯลฯ',
     balance: 'ยอดคงค้าง', owes: '{from} ต้องจ่าย {to}', allSettled: 'เคลียร์กันครบแล้ว 🎉', settleNow: 'เคลียร์เงิน',
     partnerThisMonth: 'ของ{name}เดือนนี้', mineThisMonth: 'ของ{name}', allTotal: 'รวมทั้งหมด',
@@ -91,6 +95,10 @@ const dict = {
     alsoInBatch: 'รายการอื่นที่เพิ่มไว้ในรอบนี้', fromKind: 'จาก {kind}', itemsUnit: 'รายการ', receiptNo: 'ใบที่ {n}',
     moreOptions: 'โน้ต / ใครจ่าย', queued: 'รอคิวอ่าน…', batchCount: '{n} รายการ',
     saveAll: 'บันทึกทั้งหมด ({n})', savingN: 'กำลังบันทึก {i}/{n}…', savedN: 'บันทึกแล้ว {n} รายการ ✓', confirmDiscard: 'ทิ้งรายการที่ยังไม่บันทึก?',
+    orStartFood: 'หรือเริ่มจากกินข้างนอก', moreReceipts: '📷 + ใบเสร็จ 7-11', moreFoodCard: '🍜 + กินข้างนอก',
+    cardNo: 'ใบที่ {n}', addReceiptPart: '+ 🏪 ใบเสร็จ 7-11', addFoodPart: '+ 🍜 กินข้างนอก', addRidePart: '+ 🛵 ค่าวิน',
+    part_store: '🏪 7-11', part_food: '🍜 กินข้างนอก', part_travel: '🛵 ค่าวิน', addRideItem: '+ ค่าวิน',
+    liveTotal: 'ยอดรวมทุกใบ · {n} ใบ', waitReading: 'กำลังอ่าน…',
     search: 'ค้นหา…', noResults: 'ไม่พบรายการในเดือนนี้', partnerPart: '{name} {amt}',
     recordPayment: 'บันทึกการโอนเงิน', amount: 'จำนวนเงิน', settlements: 'ประวัติการโอน', noSettlements: 'ยังไม่มีการโอนเงิน',
     paidTo: '{from} โอนให้ {to}', settledMsg: 'บันทึกการโอนแล้ว ✓',

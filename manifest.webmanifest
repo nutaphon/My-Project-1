@@ -1,0 +1,9 @@
+{
+  "name": "Meal Split · หารค่าข้าว",
+  "short_name": "หารค่าข้าว",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f6f6f4",
+  "theme_color": "#2a78d6",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}
